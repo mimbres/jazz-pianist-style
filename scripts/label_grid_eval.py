@@ -41,6 +41,12 @@ from ariautils.tokenizer import AbsTokenizer
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from likelihood_classify import load_model as load_generator, score_sequence  # noqa: E402
+from likelihood_by_token_type import score as score_by_kind, vocab_tables, KINDS  # noqa: E402
+
+# Likelihood judges: which token kinds they may use (indices into KINDS)
+LIK_JUDGES = {"lik": None,                        # all tokens
+              "lik_vt": [1, 2, 3],                 # velocity | pitch, onset, dur: what a score-fixed re-performance changes
+              "lik_pitch": [0]}                    # the pitch marginal: what the score fixes
 
 logger = logging.getLogger("label_grid_eval")
 
@@ -64,6 +70,8 @@ def parse_args():
     ap.add_argument("--classifier-batch", type=int, default=8)
     ap.add_argument("--skip-likelihood", action="store_true")
     ap.add_argument("--skip-classifier", action="store_true")
+    ap.add_argument("--by-kind", action="store_true",
+                    help="also judge by likelihood restricted to velocity+timing tokens and to the pitch marginal")
     ap.add_argument("--device", default=None)
     return ap.parse_args()
 
@@ -77,6 +85,7 @@ def likelihood_pass(records, args, num_artists, device):
     model, emb = load_generator(args, num_artists, device)
     use_amp = device.startswith("cuda")
     conditions = list(range(num_artists)) + [None]
+    tables = vocab_tables(AbsTokenizer(), device) if args.by_kind else None
     for i, r in enumerate(records):
         ids = r["prompt_ids"] + r["continuation_ids"]
         if len(r["continuation_ids"]) < 2:
@@ -85,12 +94,23 @@ def likelihood_pass(records, args, num_artists, device):
         input_ids = torch.tensor([ids[:-1]], device=device)
         labels = torch.tensor([ids[1:]], device=device)
         labels[0, :r["prompt_length"] - 1] = -100   # score the continuation only
-        nll = score_sequence(model, emb, input_ids, labels, conditions, device, use_amp, args.ce_slice)
-        valid = (labels[0] != -100).cpu().numpy()
-        totals = nll[:, valid].sum(axis=1)
-        order = np.argsort(totals[:num_artists])
-        r["lik"] = {"total_nll": totals.tolist(), "pred": int(order[0]),
-                    "margin": float(totals[order[1]] - totals[order[0]]), "n_scored": int(valid.sum())}
+        if args.by_kind:
+            table, _ = score_by_kind(model, emb, input_ids, labels[0], num_artists, device, use_amp,
+                                     args.ce_slice, *tables)                      # (A, 5)
+            totals = np.concatenate([table.sum(axis=1), [float("nan")]])          # no zeroed-context row here
+            for judge, cols in LIK_JUDGES.items():
+                sub = table.sum(axis=1) if cols is None else table[:, cols].sum(axis=1)
+                order = np.argsort(sub)
+                r[judge] = {"total_nll": sub.tolist(), "pred": int(order[0]),
+                            "margin": float(sub[order[1]] - sub[order[0]])}
+            r["lik"]["n_scored"] = int((labels[0] != -100).sum())
+        else:
+            nll = score_sequence(model, emb, input_ids, labels, conditions, device, use_amp, args.ce_slice)
+            valid = (labels[0] != -100).cpu().numpy()
+            totals = nll[:, valid].sum(axis=1)
+            order = np.argsort(totals[:num_artists])
+            r["lik"] = {"total_nll": totals.tolist(), "pred": int(order[0]),
+                        "margin": float(totals[order[1]] - totals[order[0]]), "n_scored": int(valid.sum())}
         if (i + 1) % 25 == 0:
             logger.info(f"  likelihood {i + 1}/{len(records)}")
     model.cpu(); emb.cpu()
@@ -156,14 +176,14 @@ def summarise(records, names, num_artists):
               "no_context": [r for r in records if r["cond_id"] == NO_CONTEXT]}
     groups = {k: v for k, v in groups.items() if v}
     out = {"n": {k: len(v) for k, v in groups.items()}, "judges": {}}
-    for judge in ("lik", "clf"):
-        if not any(judge in r for r in records):
+    for judge in ("lik", "lik_vt", "lik_pitch", "clf"):
+        if not any(r.get(judge) for r in records):
             continue
         J = out["judges"][judge] = {}
         for g, rs in groups.items():
             if not rs:
                 continue
-            key = "pred" if judge == "lik" else "majority"
+            key = "majority" if judge == "clf" else "pred"
             outs = Counter(outcome(r[judge][key] if r.get(judge) else None, r["cond_id"], r["artist_id"]) for r in rs)
             tot = max(1, len(rs))
             J[g] = {k: outs.get(k, 0) / tot for k in ("cond", "prompt", "other", "none")}
@@ -186,7 +206,7 @@ def summarise(records, names, num_artists):
                     J[g]["window_mean"] = {"cond": float(np.mean([a for a, _ in allw])),
                                            "prompt": float(np.mean([b for _, b in allw]))}
             else:
-                margins = [r["lik"]["margin"] for r in rs if r.get("lik")]
+                margins = [r[judge]["margin"] for r in rs if r.get(judge)]
                 J[g]["margin_median_nats"] = float(np.median(margins)) if margins else None
     # confusion: conditioning label -> likelihood prediction, over conditioned continuations
     conf = np.zeros((num_artists, num_artists), dtype=int)
@@ -200,6 +220,8 @@ def summarise(records, names, num_artists):
         if rs:
             per_label[names[c]] = {"n": len(rs),
                                    "lik_recovers_label": float(np.mean([r["lik"]["pred"] == c for r in rs])),
+                                   **({"lik_vt_recovers_label": float(np.mean([r["lik_vt"]["pred"] == c for r in rs]))}
+                                      if all(r.get("lik_vt") for r in rs) else {}),
                                    "clf_majority_is_label": float(np.mean([r["clf"]["majority"] == c for r in rs if r.get("clf")])) if any(r.get("clf") for r in rs) else None}
     out["per_conditioning_label"] = per_label
     return out
@@ -216,8 +238,12 @@ def write_report(summary, config, out_path: Path, names):
          "## Whose style does each judge hear?", "",
          "| group | judge | says the **conditioning** label | says the **prompt's** pianist | other |",
          "|---|---|---|---|---|"]
+    judge_labels = (("lik", "likelihood, all tokens"),
+                    ("lik_vt", "likelihood, velocity + timing tokens only (what was regenerated)"),
+                    ("lik_pitch", "likelihood, pitch marginal only (what the score fixes)"),
+                    ("clf", "classifier (paper), majority of windows"))
     for g in ("original", "matched", "mismatched", "no_context"):
-        for judge, label in (("lik", "likelihood (generator, teacher-forced)"), ("clf", "classifier (paper), majority of windows")):
+        for judge, label in judge_labels:
             J = summary["judges"].get(judge, {}).get(g)
             if not J:
                 continue
@@ -237,18 +263,24 @@ def write_report(summary, config, out_path: Path, names):
                 L.append(f"| {g} | {fmt_pct(J['window_mean']['cond'])} | {fmt_pct(J['window_mean']['prompt'])} |")
         L += ["", "Paper, Section 5 (P=256, 4096-token continuations): conditioned agreement 70%; "
               "mismatch at P=512: conditioning artist 15→24%, prompt artist 40→27% along the continuation.", ""]
-    lik = summary["judges"].get("lik", {})
-    if lik:
-        L += ["### Likelihood margin", ""]
+    for judge, label in judge_labels[:3]:
+        lik = summary["judges"].get(judge, {})
+        if not lik:
+            continue
+        L += [f"### Margin, {label}", ""]
         for g in ("original", "matched", "mismatched", "no_context"):
             J = lik.get(g)
             if J and J.get("margin_median_nats") is not None:
                 L.append(f"- {g}: median NLL(runner-up) − NLL(best) = {J['margin_median_nats']:.1f} nats")
         L.append("")
-    L += ["## Per conditioning label", "", "| label | n | likelihood recovers it | classifier majority is it |", "|---|---|---|---|"]
+    has_vt = any("lik_vt_recovers_label" in v for v in summary["per_conditioning_label"].values())
+    L += ["## Per conditioning label", "",
+          "| label | n | likelihood (all) recovers it |" + (" velocity+timing only |" if has_vt else "") + " classifier majority is it |",
+          "|---|---|---|" + ("---|" if has_vt else "") + "---|"]
     for name, v in summary["per_conditioning_label"].items():
         L.append(f"| {name} | {v['n']} | {fmt_pct(v['lik_recovers_label'])} | "
-                 f"{fmt_pct(v['clf_majority_is_label']) if v['clf_majority_is_label'] is not None else '—'} |")
+                 + (f"{fmt_pct(v['lik_vt_recovers_label'])} | " if has_vt else "")
+                 + f"{fmt_pct(v['clf_majority_is_label']) if v['clf_majority_is_label'] is not None else '—'} |")
     L.append("")
     out_path.write_text("\n".join(L))
     return "\n".join(L)
