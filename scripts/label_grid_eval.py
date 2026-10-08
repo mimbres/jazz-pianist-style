@@ -45,7 +45,7 @@ from likelihood_classify import load_model as load_generator, score_sequence  # 
 logger = logging.getLogger("label_grid_eval")
 
 CLASSIFY_WINDOW, WINDOW_STRIDE = 1024, 128
-NO_CONTEXT = -1
+NO_CONTEXT, ORIGINAL = -1, -2   # cond_id of the zeroed-context control and of the real performance
 
 
 def parse_args():
@@ -145,9 +145,11 @@ def outcome(pred, cond_id, prompt_id):
 
 
 def summarise(records, names, num_artists):
-    groups = {"matched": [r for r in records if r["cond_id"] == r["artist_id"]],
-              "mismatched": [r for r in records if r["cond_id"] not in (r["artist_id"], NO_CONTEXT)],
+    groups = {"original": [r for r in records if r["cond_id"] == ORIGINAL],
+              "matched": [r for r in records if r["cond_id"] == r["artist_id"]],
+              "mismatched": [r for r in records if r["cond_id"] not in (r["artist_id"], NO_CONTEXT, ORIGINAL)],
               "no_context": [r for r in records if r["cond_id"] == NO_CONTEXT]}
+    groups = {k: v for k, v in groups.items() if v}
     out = {"n": {k: len(v) for k, v in groups.items()}, "judges": {}}
     for judge in ("lik", "clf"):
         if not any(judge in r for r in records):
@@ -201,22 +203,22 @@ def summarise(records, names, num_artists):
 def write_report(summary, config, out_path: Path, names):
     n = summary["n"]
     L = ["# Label grid: same prompt, every artist label", "",
-         f"Prompts: {config['n_prompts']} ({config['prompt_length']} tokens, held-out validation performances); "
+         f"Prompts: {config['n_prompts']} ({config['prompt_length']} tokens); "
          f"continuations: up to {config['max_continuation']} tokens; conditions per prompt: {config['n_conditions']}. "
-         f"Matched = label is the prompt's pianist (n={n['matched']}); mismatched = any other label (n={n['mismatched']}); "
-         f"no context = zeroed artist context (n={n['no_context']}).", "",
+         + "; ".join(f"{g} n={c}" for g, c in n.items()) + ". "
+         "Matched = label is the prompt's pianist; mismatched = any other label; no context = zeroed artist context; "
+         "original = the real performance itself (only in the score-fixed experiment).", "",
          "## Whose style does each judge hear?", "",
          "| group | judge | says the **conditioning** label | says the **prompt's** pianist | other |",
          "|---|---|---|---|---|"]
-    for g in ("matched", "mismatched", "no_context"):
+    for g in ("original", "matched", "mismatched", "no_context"):
         for judge, label in (("lik", "likelihood (generator, teacher-forced)"), ("clf", "classifier (paper), majority of windows")):
             J = summary["judges"].get(judge, {}).get(g)
             if not J:
                 continue
-            cond = "same as prompt" if g == "matched" and judge == "lik" else fmt_pct(J["cond"])
             if g == "matched":
                 L.append(f"| {g} | {label} | {fmt_pct(J['cond'])} (= prompt's pianist) | — | {fmt_pct(J['other'])} |")
-            elif g == "no_context":
+            elif g in ("no_context", "original"):
                 L.append(f"| {g} | {label} | — | {fmt_pct(J['prompt'])} | {fmt_pct(J['other'] + J['cond'])} |")
             else:
                 L.append(f"| {g} | {label} | {fmt_pct(J['cond'])} | {fmt_pct(J['prompt'])} | {fmt_pct(J['other'])} |")
@@ -224,7 +226,7 @@ def write_report(summary, config, out_path: Path, names):
     if clf:
         L += ["", "### Classifier, per window (the paper's agreement statistic)", "",
               "| group | agreement with conditioning label | agreement with prompt's pianist |", "|---|---|---|"]
-        for g in ("matched", "mismatched", "no_context"):
+        for g in ("original", "matched", "mismatched", "no_context"):
             J = clf.get(g)
             if J and "window_mean" in J:
                 L.append(f"| {g} | {fmt_pct(J['window_mean']['cond'])} | {fmt_pct(J['window_mean']['prompt'])} |")
@@ -233,7 +235,7 @@ def write_report(summary, config, out_path: Path, names):
     lik = summary["judges"].get("lik", {})
     if lik:
         L += ["### Likelihood margin", ""]
-        for g in ("matched", "mismatched", "no_context"):
+        for g in ("original", "matched", "mismatched", "no_context"):
             J = lik.get(g)
             if J and J.get("margin_median_nats") is not None:
                 L.append(f"- {g}: median NLL(runner-up) − NLL(best) = {J['margin_median_nats']:.1f} nats")
