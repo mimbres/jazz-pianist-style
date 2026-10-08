@@ -65,16 +65,18 @@ def parse_args():
 
 
 def summarise(tracks, excerpt_s):
-    rho = np.array([t["spearman"] for t in tracks])
-    peak_gap = np.array([abs(t["excerpts"]["clf_peak"]["time_s"] - t["excerpts"]["lik_peak"]["time_s"]) for t in tracks])
-    trough_gap = np.array([abs(t["excerpts"]["clf_trough"]["time_s"] - t["excerpts"]["lik_trough"]["time_s"]) for t in tracks])
-    cross = np.array([abs(t["excerpts"]["clf_peak"]["time_s"] - t["excerpts"]["lik_trough"]["time_s"]) for t in tracks])
+    scored = [t for t in tracks if t["spearman"] is not None]
+    rho = np.array([t["spearman"] for t in scored])
+    peak_gap = np.array([abs(t["excerpts"]["clf_peak"]["time_s"] - t["excerpts"]["lik_peak"]["time_s"]) for t in scored])
+    trough_gap = np.array([abs(t["excerpts"]["clf_trough"]["time_s"] - t["excerpts"]["lik_trough"]["time_s"]) for t in scored])
+    cross = np.array([abs(t["excerpts"]["clf_peak"]["time_s"] - t["excerpts"]["lik_trough"]["time_s"]) for t in scored])
     edges = np.linspace(-1, 1, 11)
     by_artist = defaultdict(list)
-    for t in tracks:
+    for t in scored:
         by_artist[t["artist"]].append(t["spearman"])
     return {
-        "n": len(tracks), "rho_mean": float(rho.mean()), "rho_median": float(np.median(rho)),
+        "n": len(scored), "n_unscored": len(tracks) - len(scored),
+        "rho_mean": float(rho.mean()), "rho_median": float(np.median(rho)),
         "rho_q1": float(np.percentile(rho, 25)), "rho_q3": float(np.percentile(rho, 75)),
         "rho_min": float(rho.min()), "rho_max": float(rho.max()),
         "frac_negative": float((rho < 0).mean()), "frac_abs_above_0.3": float((np.abs(rho) > 0.3).mean()),
@@ -92,6 +94,7 @@ def draw_figure(tracks, summary, out_path: Path):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
+    tracks = [t for t in tracks if t["spearman"] is not None]
     rho = np.array([t["spearman"] for t in tracks])
     clf_peak = np.array([max(t["clf_curve"]) for t in tracks])
     demo = np.array([t.get("demo", False) for t in tracks])
@@ -272,7 +275,12 @@ def main():
         tok_curve = zscore(gaussian_filter1d(ratio, args.token_sigma))
         tok_times = np.interp(np.arange(n), tok_idx, tok_time)
 
-        rho, p = spearmanr(np.interp(lik_times, clf_times, clf_curve), lik_curve)
+        if len(windows) < 3:
+            rho, p = float("nan"), float("nan")   # one or two windows: no ordering to compare
+        else:
+            rho, p = spearmanr(np.interp(lik_times, clf_times, clf_curve), lik_curve)
+        rho_json = None if np.isnan(rho) else round(float(rho), 2)
+        p_json = None if np.isnan(p) else round(float(p), 3)
 
         half = args.excerpt_seconds / 2
         excerpts = {}
@@ -309,13 +317,13 @@ def main():
             "window_margin_std": round(float(win_margin.std()), 2),
             "classifier_margin_mean": round(float(reg["margin_mean"]), 2),
             "classifier_margin_std": round(float(reg["margin_std"]), 2),
-            "spearman": round(float(rho), 2), "spearman_p": round(float(p), 3),
+            "spearman": rho_json, "spearman_p": p_json,
             "clf_times": [round(v, 2) for v in ct], "clf_curve": [round(v, 3) for v in cc],
             "lik_times": [round(v, 2) for v in lt], "lik_curve": [round(v, 3) for v in lc],
             "tok_times": [round(v, 2) for v in tt], "tok_curve": [round(v, 3) for v in tc],
             "excerpts": excerpts, "roll": roll,
         })
-        print(f"{meta['artist']:18s} {meta.get('title', '')[:40]:40s} rho={rho:+.2f} "
+        print(f"{meta['artist']:18s} {meta.get('title', '')[:40]:40s} rho={rho:+.2f} windows={len(windows)} "
               f"clf peak {excerpts['clf_peak']['time_s']:.0f}s / lik peak {excerpts['lik_peak']['time_s']:.0f}s  "
               f"runner-up {names[runner_up]}")
 

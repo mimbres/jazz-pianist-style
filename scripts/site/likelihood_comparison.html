@@ -68,6 +68,12 @@
     border: 1px solid var(--line); border-radius: 999px; padding: .3rem .8rem;
   }
   .pick button[aria-pressed="true"] { color: var(--ink); border-color: var(--ink-dim); background: var(--bg-sunken); }
+  .pick.tracks { margin: -.4rem 0 1rem; }
+  .pick.tracks button { font-size: .85rem; padding: .18rem .6rem; border-radius: 6px; }
+  .pick.tracks button .demo, td .demo { color: var(--clf); margin-right: .3rem; }
+  #rho-hist { height: 120px; margin: .6rem 0 .4rem; }
+  .summary { font-size: .95rem; margin: .4rem 0 0; }
+  .summary b { font-family: var(--mono); font-weight: 500; }
   .pick button:hover, .play:hover { color: var(--ink); }
   button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
 
@@ -143,12 +149,13 @@
       how much better does the true pianist's label predict the notes than the
       strongest rival label? Both curves use the same 1024-token windows, the same
       within-track z-score and the same smoothing, so they can be laid on top of
-      each other. Pick a pianist, then listen to the four passages each method
-      singles out.
+      each other. Pick a pianist and a recording, then listen to the four
+      passages each method singles out.
     </p>
   </header>
 
   <div class="pick" id="pick" role="group" aria-label="Choose a pianist"></div>
+  <div class="pick tracks" id="pick-track" role="group" aria-label="Choose a recording"></div>
 
   <section class="panel">
     <div class="track-head">
@@ -181,8 +188,13 @@
     <p class="status" id="status"></p>
   </section>
 
-  <h2>All twelve recordings</h2>
-  <p>Spearman ρ between the two window curves, and where each method puts its peak. Click a row to open it.</p>
+  <h2 id="all-head">All recordings</h2>
+  <p>Spearman ρ between the two window curves on every held-out test recording, and where each method puts its peak.
+    <span class="demo">●</span> marks the recordings the paper's companion page plays. Click a row to open it.</p>
+  <div class="panel">
+    <p class="summary" id="summary-line"></p>
+    <canvas id="rho-hist" aria-label="Histogram of ρ across recordings"></canvas>
+  </div>
   <div class="table-wrap panel"><table id="table">
     <thead><tr>
       <th>Pianist</th><th>Recording</th><th>ρ between the two curves (− disagree · + agree)</th>
@@ -537,17 +549,33 @@
     }
   }
 
+  const artists = [...new Set(tracks.map((t) => t.artist))];
+  const shortTitle = (s, n = 34) => (s.length > n ? s.slice(0, n - 2) + "…" : s);
+  function buildTrackPicker(artist) {
+    const host = el("pick-track");
+    host.innerHTML = "";
+    tracks.forEach((t, i) => {
+      if (t.artist !== artist) return;
+      const b = document.createElement("button");
+      b.innerHTML = (t.demo ? `<span class="demo">●</span>` : "") + shortTitle(t.title);
+      b.title = `${t.title}` + (t.spearman == null ? "" : ` · ρ ${signed(t.spearman)}`);
+      b.setAttribute("aria-pressed", String(i === active));
+      b.addEventListener("click", () => select(i));
+      host.appendChild(b);
+    });
+  }
   function select(idx) {
     voice.stop(); if (currentClip) setPressed(currentClip, false); currentClip = null;
     active = idx;
     const t = track();
-    [...el("pick").children].forEach((b, i) => b.setAttribute("aria-pressed", String(i === idx)));
+    [...el("pick").children].forEach((b) => b.setAttribute("aria-pressed", String(b.textContent === t.artist)));
+    buildTrackPicker(t.artist);
     [...el("table").tBodies[0].rows].forEach((r, i) => r.setAttribute("aria-selected", String(i === idx)));
     el("title").innerHTML = `<b>${t.artist}</b><span class="sub">${t.title}</span>`;
     el("duration").textContent = `${fmt(t.duration_s)} · ${t.n_tokens.toLocaleString()} tokens · ${t.n_windows} windows`;
     const agree = Math.abs(t.excerpts.clf_peak.time_s - t.excerpts.lik_peak.time_s) <= EXCERPT_MS / 1000;
     el("stats").innerHTML = [
-      ["Agreement of the two curves", `Spearman ρ ${signed(t.spearman).replace(/^\+/, "")}`, ""],
+      ["Agreement of the two curves", t.spearman == null ? "undefined (fewer than 3 windows)" : `Spearman ρ ${signed(t.spearman).replace(/^\+/, "")}`, ""],
       ["Classifier margin across windows", `${t.classifier_margin_mean.toFixed(1)} ± ${t.classifier_margin_std.toFixed(2)} logits`, "clf"],
       ["Likelihood margin across windows", `${t.window_margin_mean.toFixed(1)} ± ${t.window_margin_std.toFixed(1)} nats`, "lik"],
       ["Rival label", `${t.classifier_runner_up || "—"} <span style="color:var(--ink-dim)">·</span> ${t.runner_up}`, ""],
@@ -567,11 +595,13 @@
     tracks.forEach((t, i) => {
       const tr = document.createElement("tr");
       const bar = (rho) => {
+        if (rho == null) return "";
         const half = Math.abs(rho) * 42;   // 42px = |ρ| of 1
         return `<span class="div" title="ρ ${signed(rho)}"><i style="${rho >= 0 ? "left:50%" : "right:50%"};width:${half}px"></i></span>`;
       };
-      tr.innerHTML = `<td>${t.artist}</td><td title="${t.title}">${t.title.length > 34 ? t.title.slice(0, 32) + "…" : t.title}</td>` +
-        `<td class="num"><span class="rho">${signed(t.spearman).replace(/^\+/, "")}</span> ${bar(t.spearman)}</td>` +
+      const rhoText = t.spearman == null ? "—" : signed(t.spearman).replace(/^\+/, "");
+      tr.innerHTML = `<td>${t.artist}</td><td title="${t.title}">${t.demo ? `<span class="demo">●</span>` : ""}${shortTitle(t.title)}</td>` +
+        `<td class="num"><span class="rho">${rhoText}</span> ${bar(t.spearman)}</td>` +
         `<td class="num">${fmt(t.excerpts.clf_peak.time_s)} · ${fmt(t.excerpts.clf_trough.time_s)}</td>` +
         `<td class="num">${fmt(t.excerpts.lik_peak.time_s)} · ${fmt(t.excerpts.lik_trough.time_s)}</td>` +
         `<td>${t.classifier_runner_up || "—"} · ${t.runner_up}</td>` +
@@ -579,16 +609,53 @@
       tr.addEventListener("click", () => { select(i); el("title").scrollIntoView({ behavior: "smooth", block: "start" }); });
       body.appendChild(tr);
     });
-    const rhos = tracks.map((t) => t.spearman);
+    const scored = tracks.filter((t) => t.spearman != null);
+    const rhos = scored.map((t) => t.spearman);
     const neg = rhos.filter((r) => r < 0).length;
     const mean = rhos.reduce((a, b) => a + b, 0) / rhos.length;
-    const within = tracks.filter((t) => Math.abs(t.excerpts.clf_peak.time_s - t.excerpts.lik_peak.time_s) <= EXCERPT_MS / 1000).length;
+    const sorted = [...rhos].sort((a, b) => a - b);
+    const median = sorted[Math.floor(sorted.length / 2)];
+    const within = scored.filter((t) => Math.abs(t.excerpts.clf_peak.time_s - t.excerpts.lik_peak.time_s) <= EXCERPT_MS / 1000).length;
+    const opposite = scored.filter((t) => Math.abs(t.excerpts.clf_peak.time_s - t.excerpts.lik_trough.time_s) <= EXCERPT_MS / 1000).length;
+    const strongPos = rhos.filter((r) => r > 0.3).length, strongNeg = rhos.filter((r) => r < -0.3).length;
+    const unscored = tracks.length - scored.length;
+    el("all-head").textContent = `All ${tracks.length} recordings`;
+    el("summary-line").innerHTML = `Median ρ <b>${signed(median)}</b>, mean <b>${signed(mean)}</b> over ${scored.length} recordings` +
+      (unscored ? ` (${unscored} too short for a curve: fewer than 3 windows)` : "") + `; ` +
+      `<b>${neg}</b> negative. Clearly positive (ρ &gt; 0.3): <b>${strongPos}</b>; clearly negative (ρ &lt; −0.3): <b>${strongNeg}</b>. ` +
+      `The two methods' peaks fall within one excerpt of each other on <b>${within}</b> recordings; ` +
+      `the classifier's peak sits at the likelihood's trough on <b>${opposite}</b>.`;
     el("table-note").textContent = `ρ is the Spearman correlation between the classifier curve and the likelihood curve of the same recording: ` +
       `+1 would mean both methods rank the passages identically, −1 the reverse. The red tick is ρ = 0; the grey bar grows to its right for positive ρ and to its left for negative. ` +
-      `Mean ρ ${signed(mean)}; ${neg} of ${tracks.length} recordings negative. ` +
-      `The two peaks fall within one excerpt of each other on ${within} of ${tracks.length}. ` +
       `Margin spread is the within-track standard deviation each method's z-score divides by. ` +
       `Gold and blue elsewhere on the page always mean classifier and likelihood; gold and mauve on the piano rolls mean most and least characteristic.`;
+  }
+
+  function drawHist() {
+    const T = tok(), [c, w, h] = fit(el("rho-hist"));
+    const rhos = tracks.map((t) => t.spearman).filter((r) => r != null);
+    const edges = Array.from({ length: 11 }, (_, i) => -1 + i * 0.2);
+    const counts = edges.slice(0, -1).map((e, i) => rhos.filter((r) => r >= e && (i === 9 ? r <= edges[i + 1] : r < edges[i + 1])).length);
+    const padL = 6, padR = 6, padT = 8, padB = 18;
+    const xOf = (r) => padL + ((r + 1) / 2) * (w - padL - padR);
+    const maxC = Math.max(1, ...counts);
+    const yOf = (n) => padT + (1 - n / maxC) * (h - padT - padB);
+    c.clearRect(0, 0, w, h);
+    c.font = `10.5px ${getComputedStyle(document.body).getPropertyValue("--mono")}`;
+    counts.forEach((n, i) => {
+      const x0 = xOf(edges[i]) + 1, x1 = xOf(edges[i + 1]) - 1;
+      c.fillStyle = T.lik; c.globalAlpha = 0.75;
+      c.fillRect(x0, yOf(n), x1 - x0, h - padB - yOf(n));
+      c.globalAlpha = 1;
+      if (n) { c.fillStyle = T.ink; const s = String(n), tw = c.measureText(s).width; c.fillText(s, (x0 + x1) / 2 - tw / 2, yOf(n) - 3); }
+    });
+    c.strokeStyle = T.line; c.beginPath(); c.moveTo(padL, h - padB + 0.5); c.lineTo(w - padR, h - padB + 0.5); c.stroke();
+    c.fillStyle = T.dim;
+    for (const r of [-1, -0.5, 0, 0.5, 1]) { const s = r.toFixed(1), tw = c.measureText(s).width; c.fillText(s, clamp(xOf(r) - tw / 2, 1, w - tw - 1), h - 4); }
+    const zx = Math.round(xOf(0)) + 0.5;
+    c.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue("--zero").trim(); c.lineWidth = 2;
+    c.beginPath(); c.moveTo(zx, padT - 4); c.lineTo(zx, h - padB + 4); c.stroke(); c.lineWidth = 1;
+    c.fillStyle = T.dim; c.fillText("ρ = 0", zx + 5, padT + 6);
   }
 
   function buildNotes() {
@@ -607,16 +674,23 @@
       `page data from scripts/site/build_likelihood_comparison.py. Playback is a small synthesiser in the page, not a piano recording.`;
   }
 
-  tracks.forEach((t, i) => {
-    const b = document.createElement("button"); b.textContent = t.artist; b.setAttribute("aria-pressed", "false");
-    b.addEventListener("click", () => select(i)); el("pick").appendChild(b);
+  // One button per pianist; it opens that pianist's companion-page recording, or their first one
+  const firstFor = (artist) => {
+    const demo = tracks.findIndex((t) => t.artist === artist && t.demo);
+    return demo >= 0 ? demo : tracks.findIndex((t) => t.artist === artist);
+  };
+  artists.forEach((artist) => {
+    const b = document.createElement("button"); b.textContent = artist; b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", () => select(firstFor(artist))); el("pick").appendChild(b);
   });
   buildClips(); buildTable(); buildNotes();
-  select(Math.max(0, tracks.findIndex((t) => t.artist === "Art Tatum")));
+  select(Math.max(0, firstFor("Art Tatum")));
+  drawHist();
 
-  window.addEventListener("resize", drawAll);
-  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawAll);
-  new MutationObserver(drawAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  const redraw = () => { drawAll(); drawHist(); };
+  window.addEventListener("resize", redraw);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", redraw);
+  new MutationObserver(redraw).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
   (function frame() { if (voice.playing) drawAll(); requestAnimationFrame(frame); })();
 })();
 </script>
