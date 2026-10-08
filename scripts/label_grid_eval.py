@@ -93,19 +93,24 @@ def likelihood_pass(records, args, num_artists, device):
                     "margin": float(totals[order[1]] - totals[order[0]]), "n_scored": int(valid.sum())}
         if (i + 1) % 25 == 0:
             logger.info(f"  likelihood {i + 1}/{len(records)}")
+    model.cpu(); emb.cpu()
     del model, emb
     gc.collect()
     if device.startswith("cuda"):
+        torch.cuda.synchronize()
         torch.cuda.empty_cache()
+        logger.info(f"generator released; {torch.cuda.memory_allocated() / 1e9:.2f} GB still allocated")
 
 
 @torch.no_grad()
 def classifier_pass(records, args, num_artists, device, tokenizer):
     from llama_pijama.evaluation import load_model as load_classifier
+    # Load on the CPU and cast before moving, so the fp32 copy never touches the GPU
     clf, _ = load_classifier(str(args.classifier), model_name=args.model_name,
-                             num_classes=num_artists, device=device)
+                             num_classes=num_artists, device="cpu")
     if args.dtype == "fp16":
         clf.half()
+    clf = clf.to(device).eval()
     eos_id = tokenizer.vocab.index(tokenizer.eos_tok)
     pad_id = tokenizer.vocab.index(tokenizer.pad_tok)
     for i, r in enumerate(records):
