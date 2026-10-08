@@ -249,7 +249,11 @@ def topk_comparison(rows, test_jsonl: Path, clf_eval: Path, names, num_artists, 
         if span.shape[1] == 0:
             continue
         nll = span.sum(axis=1)
-        chunks.append((tid, k, rank_of(logits, true_id), rank_of(-nll, true_id), (chunk * k) % 4096 == 0))
+        # label-free confidence: gap between the method's own first and second choice
+        clf_sorted, lik_sorted = np.sort(logits)[::-1], np.sort(nll)
+        chunks.append((tid, k, rank_of(logits, true_id), rank_of(-nll, true_id), (chunk * k) % 4096 == 0,
+                       float(clf_sorted[0] - clf_sorted[1]), float(lik_sorted[1] - lik_sorted[0]), true_id,
+                       int(np.argmax(logits)), int(np.argmin(nll))))
         track_logits[tid] += logits
         track_nll[tid] = (st["nll"][:num_artists].sum(axis=1), true_id)
 
@@ -268,6 +272,33 @@ def topk_comparison(rows, test_jsonl: Path, clf_eval: Path, names, num_artists, 
         t_lik.append(rank_of(-nll, true_id))
     out["track"] = {"classifier": acc(t_clf), "likelihood": acc(t_lik)}
     out["seq4096"] = {"likelihood": acc([rank_of(-np.asarray(r["total_nll"][:num_artists]), r["true_id"]) for r in rows])}
+
+    # Selective accuracy: keep only the chunks each method is most confident about
+    # (its own top-1 vs top-2 gap, no label used), at decreasing coverage.
+    from scipy.stats import spearmanr
+    clf_conf = np.array([c[5] for c in chunks]); clf_ok = np.array([c[2] == 1 for c in chunks])
+    lik_conf = np.array([c[6] for c in chunks]); lik_ok = np.array([c[3] == 1 for c in chunks])
+    coverages = (1.0, 0.75, 0.5, 0.25, 0.1)
+    def selective(conf, ok):
+        order = np.argsort(-conf, kind="stable")
+        return {f"{int(c * 100)}%": float(ok[order[:max(1, int(round(c * len(order))))]].mean()) for c in coverages}
+    sel = {"classifier": selective(clf_conf, clf_ok), "likelihood": selective(lik_conf, lik_ok),
+           "coverages": [f"{int(c * 100)}%" for c in coverages],
+           "confidence_spearman": float(spearmanr(clf_conf, lik_conf)[0])}
+    # Track rule: trust only the single most confident chunk of each track
+    best_clf, best_lik = {}, {}
+    for c in chunks:
+        tid = c[0]
+        if tid not in best_clf or c[5] > best_clf[tid][0]:
+            best_clf[tid] = (c[5], c[8] == c[7])
+        if tid not in best_lik or c[6] > best_lik[tid][0]:
+            best_lik[tid] = (c[6], c[9] == c[7])
+    sel["track_most_confident_chunk"] = {"classifier": float(np.mean([v[1] for v in best_clf.values()])),
+                                         "likelihood": float(np.mean([v[1] for v in best_lik.values()]))}
+    # How often the label-free gap equals the labelled margin (i.e. the chunk is correct):
+    sel["chunks_where_labelled_margin_equals_confidence"] = {"classifier": float(clf_ok.mean()),
+                                                             "likelihood": float(lik_ok.mean())}
+    out["selective"] = sel
     return out
 
 
@@ -416,6 +447,19 @@ def main():
         lines.append(f"| 4096 sequence (n={topk['seq4096']['likelihood']['n']}) | likelihood | {cells(topk['seq4096'], 'likelihood')} |")
         lines += ["", "Likelihood chunks other than the first in each 4096-token generator chunk see up to 3072 "
                   "tokens of preceding context that the classifier does not; the second row removes that advantage.", ""]
+        sel = topk["selective"]
+        lines += ["### Selective accuracy: only the chunks each method is most confident about", "",
+                  "Confidence is the method's own top-1 vs top-2 gap on that chunk (no label used). "
+                  "Coverage = fraction of the 1024-token chunks kept, most confident first.", "",
+                  "| coverage | " + " | ".join(sel["coverages"]) + " |", "|---|" + "---|" * len(sel["coverages"]),
+                  "| classifier | " + " | ".join(fmt_pct(sel["classifier"][c]) for c in sel["coverages"]) + " |",
+                  "| likelihood | " + " | ".join(fmt_pct(sel["likelihood"][c]) for c in sel["coverages"]) + " |", "",
+                  f"- track decided by its single most confident chunk: classifier {fmt_pct(sel['track_most_confident_chunk']['classifier'])}, "
+                  f"likelihood {fmt_pct(sel['track_most_confident_chunk']['likelihood'])} (majority vote / summed: see §1)",
+                  f"- Spearman between the two methods' confidence over the same chunks: {sel['confidence_spearman']:.2f}",
+                  f"- the labelled margin (Section 7) equals this label-free confidence on every correctly classified chunk: "
+                  f"{fmt_pct(sel['chunks_where_labelled_margin_equals_confidence']['classifier'])} of chunks for the classifier, "
+                  f"{fmt_pct(sel['chunks_where_labelled_margin_equals_confidence']['likelihood'])} for the likelihood", ""]
 
     out = {"config": config, "accuracy": {k: v for k, v in acc.items()
                                           if k not in ("confusion", "seq_true", "seq_pred", "margins")},
