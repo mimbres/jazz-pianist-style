@@ -19,6 +19,7 @@
     --mid: #5c5751;        /* z near 0 on the coloured rolls */
     --pos: #e0a33e;        /* most characteristic */
     --focus: #ffffff;
+    --zero: #e8604c;        /* the ρ = 0 tick in the table; used nowhere else */
     --display: "Fraunces", "Iowan Old Style", Georgia, serif;
     --body: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
     --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
@@ -29,7 +30,7 @@
       --bg: #f6f2ea; --bg-raised: #fffdf8; --bg-sunken: #ebe5da; --line: #d9d0c2;
       --ink: #221d18; --ink-dim: #6d655b;
       --clf: #b07a16; --clf-dim: #e6cf9c; --lik: #2f6f99; --lik-dim: #a9c8de;
-      --neg: #9a6a8d; --mid: #c9c1b4; --pos: #c98a12; --focus: #221d18;
+      --neg: #9a6a8d; --mid: #c9c1b4; --pos: #c98a12; --focus: #221d18; --zero: #c8432f;
       color-scheme: light;
     }
   }
@@ -37,7 +38,7 @@
     --bg: #f6f2ea; --bg-raised: #fffdf8; --bg-sunken: #ebe5da; --line: #d9d0c2;
     --ink: #221d18; --ink-dim: #6d655b;
     --clf: #b07a16; --clf-dim: #e6cf9c; --lik: #2f6f99; --lik-dim: #a9c8de;
-    --neg: #9a6a8d; --mid: #c9c1b4; --pos: #c98a12; --focus: #221d18;
+    --neg: #9a6a8d; --mid: #c9c1b4; --pos: #c98a12; --focus: #221d18; --zero: #c8432f;
     color-scheme: light;
   }
   * { box-sizing: border-box; }
@@ -112,9 +113,12 @@
   tbody tr[aria-selected="true"] td { background: var(--bg-sunken); color: var(--ink); }
   td .rho { display: inline-block; min-width: 3.2em; }
   /* diverging bar for ρ: a centre tick at 0, the bar grows left (negative) or right (positive), neutral colour */
-  td .div { position: relative; display: inline-block; width: 84px; height: 10px; vertical-align: middle; margin-left: .4rem; }
-  td .div::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--ink-dim); }
-  td .div i { position: absolute; top: 1px; height: 8px; border-radius: 2px; background: var(--ink-dim); }
+  td .div { position: relative; display: inline-block; width: 84px; height: 14px; vertical-align: middle; margin-left: .4rem; }
+  td .div i { position: absolute; top: 3px; height: 8px; border-radius: 2px; background: var(--ink-dim); }
+  /* the zero tick: drawn after the bar so it stays on top, in the accent-free "focus" colour */
+  td .div::after { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 2px; margin-left: -1px;
+                   background: var(--zero); border-radius: 1px; }
+  td .div::before { content: ""; position: absolute; left: 0; right: 0; top: 6px; height: 2px; background: var(--line); }
   .notes { max-width: 70ch; }
   .notes p { color: var(--ink); }
   .notes code { font-family: var(--mono); font-size: .85em; }
@@ -580,7 +584,7 @@
     const mean = rhos.reduce((a, b) => a + b, 0) / rhos.length;
     const within = tracks.filter((t) => Math.abs(t.excerpts.clf_peak.time_s - t.excerpts.lik_peak.time_s) <= EXCERPT_MS / 1000).length;
     el("table-note").textContent = `ρ is the Spearman correlation between the classifier curve and the likelihood curve of the same recording: ` +
-      `+1 would mean both methods rank the passages identically, −1 the reverse. The grey bar grows right of the tick for positive ρ and left for negative. ` +
+      `+1 would mean both methods rank the passages identically, −1 the reverse. The red tick is ρ = 0; the grey bar grows to its right for positive ρ and to its left for negative. ` +
       `Mean ρ ${signed(mean)}; ${neg} of ${tracks.length} recordings negative. ` +
       `The two peaks fall within one excerpt of each other on ${within} of ${tracks.length}. ` +
       `Margin spread is the within-track standard deviation each method's z-score divides by. ` +
