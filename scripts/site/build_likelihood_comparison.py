@@ -51,6 +51,8 @@ def parse_args():
     ap.add_argument("--regions-dir", type=Path, default=Path("results/characteristic_regions"))
     ap.add_argument("--site-tracks", type=Path, default=Path("docs/data/characteristic.json"),
                     help="the site's track selection (artist + title); all tracks if missing")
+    ap.add_argument("--real-clf-eval", type=Path, default=Path("results/pijama12_real_clf_eval.json"),
+                    help="evaluate_classifier.py output; gives the classifier's runner-up per track")
     ap.add_argument("--out", type=Path, default=Path("results/likelihood_classify/comparison.json"))
     ap.add_argument("--excerpt-seconds", type=float, default=15.0)
     ap.add_argument("--token-sigma", type=float, default=32.0, help="tokens; ~10 notes")
@@ -127,13 +129,19 @@ def pack_excerpt(notes, t0_s, seconds):
 
 
 def boundary_diagnostic(rows, num_artists, bin_size=128):
-    """Mean per-token margin (true minus best other label) by position within a chunk."""
+    """Mean per-token margin against the sequence's runner-up label, by position within a chunk.
+
+    The runner-up is fixed per sequence (second-lowest total NLL), so a per-token
+    minimum over labels does not bias the margin downward.
+    """
     sums = defaultdict(float)
     counts = defaultdict(int)
     for r in rows.values():
         nll = r["nll"][:num_artists]
-        others = np.delete(nll, r["true_id"], axis=0).min(axis=0)
-        margin = others - nll[r["true_id"]]
+        total = np.array(r["total_nll"][:num_artists])
+        runner_up = int(np.delete(np.arange(num_artists), r["true_id"])[
+            np.argmin(np.delete(total, r["true_id"]))])
+        margin = nll[runner_up] - nll[r["true_id"]]
         n = r["n_scored"]
         for b in range(0, n, bin_size):
             seg = margin[b:min(b + bin_size, n)]
@@ -152,6 +160,16 @@ def main():
     regions = json.loads((args.regions_dir / "summary.json").read_text())
     region_by_track = {t["track_id"]: t for t in regions["tracks"]}
     tokenizer = AbsTokenizer()
+
+    clf_runner_up = {}
+    if args.real_clf_eval.exists():
+        from collections import Counter
+        seconds = defaultdict(Counter)
+        for s in json.loads(args.real_clf_eval.read_text())["per_sample"]:
+            ranked = [t["artist"] for t in s["top5"]]
+            rival = ranked[1] if ranked[0] == s["true_artist"] else ranked[0]
+            seconds[s["track_id"]][rival] += 1
+        clf_runner_up = {tid: c.most_common(1)[0][0] for tid, c in seconds.items()}
 
     wanted = None
     if args.site_tracks.exists():
@@ -227,7 +245,7 @@ def main():
             "n_windows": len(windows), "chunk_starts_s": [round(float(tok_times[s]), 2)
                                                            for s in stream["chunk_starts"]],
             "runner_up": names[runner_up],
-            "classifier_runner_up": None,
+            "classifier_runner_up": clf_runner_up.get(tid),
             "track_margin_nats": round(float(np.delete(total, true_id).min() - total[true_id]), 1),
             "window_margin_mean": round(float(win_margin.mean()), 2),
             "window_margin_std": round(float(win_margin.std()), 2),
