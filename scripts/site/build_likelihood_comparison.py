@@ -250,7 +250,8 @@ def main():
                "config": {"window": WINDOW, "stride": STRIDE, "smooth_sigma": SMOOTH_SIGMA,
                           "run": config}}
     args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(json.dumps(payload, separators=(",", ":")))
+    args.out.write_text(json.dumps(payload, separators=(",", ":"),
+                                   default=lambda o: o.item() if hasattr(o, "item") else float(o)))
     print(f"{len(tracks)} tracks, {args.out.stat().st_size / 1024:.0f} KB -> {args.out}")
     print("chunk-boundary diagnostic (mean margin nats/token by position in chunk):")
     for b in payload["boundary"][:6] + payload["boundary"][-2:]:
