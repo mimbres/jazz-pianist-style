@@ -67,6 +67,9 @@ def parse_args():
     ap.add_argument("--free-tempo", action="store_true",
                     help="let the model place the 5 s time shifts itself instead of taking them from the score "
                          "(default: the score's segment boundaries are kept, i.e. a coarse tempo is given)")
+    ap.add_argument("--onset-tolerance-ms", type=int, default=0,
+                    help="if > 0, each onset must stay within this many ms of the score's onset (micro-timing "
+                         "only); 0 leaves onsets free within the segment")
     ap.add_argument("--temperature", type=float, default=0.95)
     ap.add_argument("--top-k", type=int, default=50)
     ap.add_argument("--top-p", type=float, default=0.95)
@@ -131,7 +134,7 @@ def parse_score(tokens, tokenizer, max_notes):
         elif isinstance(tok, tuple) and tok[0] == "onset" and pending is not None:
             abs_ms = base + int(tok[1])
             notes.append({"pitch": pending, "chord": last_abs is not None and abs_ms == last_abs,
-                          "segment": base // step})
+                          "segment": base // step, "onset_ms": int(tok[1])})
             last_abs = abs_ms
             pending = None
             if len(notes) >= max_notes:
@@ -219,6 +222,11 @@ def decode_score(model, score, grammar: Grammar, ctx, ctx_mask, args, device):
                     ceiling = last_value - grid * (note["remaining"] if not args.free_tempo else 0)
                     floor = -1 if (new_segment[b] or prev_onset_value[b] is None) else prev_onset_value[b]
                     allowed = grammar.onsets_between(floor, ceiling)
+                    if args.onset_tolerance_ms > 0 and not args.free_tempo:
+                        tight = grammar.onsets_between(max(floor, note["onset_ms"] - args.onset_tolerance_ms - 1),
+                                                       min(ceiling, note["onset_ms"] + args.onset_tolerance_ms))
+                        if tight.numel() > 0:
+                            allowed = tight
                     if allowed.numel() == 0:
                         allowed = grammar.onset_ids_sorted[-1:]
                     mask[b, allowed] = 0.0
