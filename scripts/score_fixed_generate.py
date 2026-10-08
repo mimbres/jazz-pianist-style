@@ -64,6 +64,9 @@ def parse_args():
     ap.add_argument("--max-notes", type=int, default=680, help="notes of the score to re-perform (~2040 tokens)")
     ap.add_argument("--min-notes", type=int, default=300)
     ap.add_argument("--skip-no-context", action="store_true")
+    ap.add_argument("--free-tempo", action="store_true",
+                    help="let the model place the 5 s time shifts itself instead of taking them from the score "
+                         "(default: the score's segment boundaries are kept, i.e. a coarse tempo is given)")
     ap.add_argument("--temperature", type=float, default=0.95)
     ap.add_argument("--top-k", type=int, default=50)
     ap.add_argument("--top-p", type=float, default=0.95)
@@ -102,32 +105,45 @@ class Grammar:
         self.pitch_tensors = {k: torch.tensor(v, device=device) for k, v in self.pitch_ids.items()}
         self.vocab_size = len(vocab)
 
-    def onsets_after(self, value):
-        """ids of onset tokens strictly later than `value` ms within the segment."""
+    def onsets_between(self, floor, ceiling):
+        """ids of onset tokens with floor < value <= ceiling (ms within the segment)."""
         import bisect
-        k = bisect.bisect_right(self.onset_values, value)
-        return self.onset_ids_sorted[k:]
+        lo = bisect.bisect_right(self.onset_values, floor)
+        hi = bisect.bisect_right(self.onset_values, ceiling)
+        return self.onset_ids_sorted[lo:hi]
 
 
 def parse_score(tokens, tokenizer, max_notes):
-    """Notes of a real token stream: (pitch key, chord_with_previous) in order."""
+    """Notes of a real token stream, in order: pitch key, chord-with-previous flag,
+    the 5 s segment the note falls in, and how many later notes of that segment
+    still need their own (strictly later) onset."""
     special = {tokenizer.eos_tok, tokenizer.bos_tok, tokenizer.pad_tok}
     clean = [tuple(t) if isinstance(t, list) else t for t in tokens]
     clean = [t for t in clean if t not in special]
     notes, base, last_abs = [], 0, None
     pending = None
+    step = tokenizer.abs_time_step_ms
     for tok in clean:
         if tok == tokenizer.time_tok:
-            base += tokenizer.abs_time_step_ms
+            base += step
         elif isinstance(tok, tuple) and len(tok) == 3 and tok[0] != "prefix":
             pending = (tok[0], tok[1])
         elif isinstance(tok, tuple) and tok[0] == "onset" and pending is not None:
             abs_ms = base + int(tok[1])
-            notes.append({"pitch": pending, "chord": last_abs is not None and abs_ms == last_abs})
+            notes.append({"pitch": pending, "chord": last_abs is not None and abs_ms == last_abs,
+                          "segment": base // step})
             last_abs = abs_ms
             pending = None
             if len(notes) >= max_notes:
                 break
+    # distinct onsets still to come in the same segment after each note
+    remaining = 0
+    for k in range(len(notes) - 1, -1, -1):
+        if k + 1 < len(notes) and notes[k + 1]["segment"] == notes[k]["segment"]:
+            remaining += 0 if notes[k + 1]["chord"] else 1
+        else:
+            remaining = 0
+        notes[k]["remaining"] = remaining
     return notes
 
 
@@ -152,7 +168,7 @@ def decode_score(model, score, grammar: Grammar, ctx, ctx_mask, args, device):
     """Constrained decoding of one score for B conditions at once. Returns B token-id lists."""
     B = ctx.shape[0]
     n_notes = len(score)
-    max_steps = 3 * n_notes + 3 * (n_notes // 40) + 32
+    max_steps = 3 * n_notes + score[-1]["segment"] + 3 * (n_notes // 40) + 32
     if hasattr(model, "reset_cache"):
         model.reset_cache()
     # per-element state
@@ -162,8 +178,11 @@ def decode_score(model, score, grammar: Grammar, ctx, ctx_mask, args, device):
     prev_onset_id = [None] * B
     new_segment = [True] * B           # no onset yet in the current segment
     t_run = [0] * B
+    segment = [0] * B                  # current 5 s segment of each row
     done = [False] * B
     out = [[] for _ in range(B)]
+    grid = grammar.onset_values[1] - grammar.onset_values[0] if len(grammar.onset_values) > 1 else 10
+    last_value = grammar.onset_values[-1]
 
     input_ids = torch.full((B, 1), grammar.prefix_id, dtype=torch.long, device=device)
     input_pos = torch.arange(0, 1, device=device)
@@ -178,25 +197,31 @@ def decode_score(model, score, grammar: Grammar, ctx, ctx_mask, args, device):
                 continue
             note = score[note_idx[b]]
             if expect[b] == NOTE:
-                segment_full = (prev_onset_value[b] is not None
-                                and prev_onset_value[b] >= grammar.onset_values[-1])
-                can_shift = not note["chord"] and t_run[b] < MAX_CONSECUTIVE_T
-                if segment_full and can_shift:
-                    mask[b, grammar.t_id] = 0.0           # no later onset left in this segment
+                if args.free_tempo:
+                    segment_full = (prev_onset_value[b] is not None
+                                    and prev_onset_value[b] >= last_value)
+                    can_shift = not note["chord"] and t_run[b] < MAX_CONSECUTIVE_T
+                    if segment_full and can_shift:
+                        mask[b, grammar.t_id] = 0.0       # no later onset left in this segment
+                    else:
+                        mask[b, grammar.pitch_tensors[note["pitch"]]] = 0.0
+                        if can_shift:
+                            mask[b, grammar.t_id] = 0.0
+                elif note["segment"] > segment[b]:
+                    mask[b, grammar.t_id] = 0.0           # the score moves to the next 5 s segment
                 else:
                     mask[b, grammar.pitch_tensors[note["pitch"]]] = 0.0
-                    if can_shift:
-                        mask[b, grammar.t_id] = 0.0
             elif expect[b] == ONSET:
                 if note["chord"] and prev_onset_id[b] is not None and not new_segment[b]:
                     mask[b, prev_onset_id[b]] = 0.0
-                elif new_segment[b] or prev_onset_value[b] is None:
-                    mask[b, grammar.onset_ids_sorted] = 0.0
                 else:
-                    later = grammar.onsets_after(prev_onset_value[b])
-                    if later.numel() == 0:          # segment full: force a time shift next
-                        later = grammar.onset_ids_sorted[-1:]
-                    mask[b, later] = 0.0
+                    # leave room for the later notes of this segment, each needing its own onset
+                    ceiling = last_value - grid * (note["remaining"] if not args.free_tempo else 0)
+                    floor = -1 if (new_segment[b] or prev_onset_value[b] is None) else prev_onset_value[b]
+                    allowed = grammar.onsets_between(floor, ceiling)
+                    if allowed.numel() == 0:
+                        allowed = grammar.onset_ids_sorted[-1:]
+                    mask[b, allowed] = 0.0
             else:
                 mask[b, grammar.dur_ids] = 0.0
         next_tokens = sample_next_token(last + mask, args.temperature, args.top_k, args.top_p)  # (B,1)
@@ -208,6 +233,7 @@ def decode_score(model, score, grammar: Grammar, ctx, ctx_mask, args, device):
             if expect[b] == NOTE:
                 if tok == grammar.t_id:
                     t_run[b] += 1
+                    segment[b] += 1
                     new_segment[b] = True
                     prev_onset_value[b], prev_onset_id[b] = None, None
                 else:
@@ -263,7 +289,9 @@ def main():
         scores = scores[:args.max_scores]
     conditions = list(range(num_artists)) + ([] if args.skip_no_context else [NO_CONTEXT])
     B = len(conditions)
-    max_seq_len = 1 + 3 * args.max_notes + 3 * (args.max_notes // 40) + 96
+    longest = max((3 * len(s["notes"]) + s["notes"][-1]["segment"] + 3 * (len(s["notes"]) // 40) + 32)
+                  for s in scores)
+    max_seq_len = 1 + longest + 64
     logger.info(f"{len(scores)} scores x {B} conditions, up to {args.max_notes} notes each, {args.dtype} on {device}")
 
     model, emb = load_generator(args, num_artists, device, dtype, B, max_seq_len)
