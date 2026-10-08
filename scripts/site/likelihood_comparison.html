@@ -1,0 +1,609 @@
+<title>Where the Style Lives, Two Ways</title>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,600&family=Source+Sans+3:wght@400;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+  /* Layout: one column, reading width for prose, full width for the instruments
+     (curve, rolls, excerpts). Dark-first like the paper's companion page, with
+     the classifier in the paper's gold and the generator likelihood in blue. */
+  :root {
+    --bg: #14110e;
+    --bg-raised: #1d1915;
+    --bg-sunken: #0d0b09;
+    --line: #322b25;
+    --ink: #f1eae0;
+    --ink-dim: #a99f92;
+    --clf: #e0a33e;        /* classifier (paper, Section 7) */
+    --clf-dim: #7a5a22;
+    --lik: #7fb2d6;        /* generator likelihood (this experiment) */
+    --lik-dim: #35586f;
+    --neg: #8a5f7e;        /* least characteristic */
+    --mid: #5c5751;        /* z near 0 on the coloured rolls */
+    --pos: #e0a33e;        /* most characteristic */
+    --focus: #ffffff;
+    --display: "Fraunces", "Iowan Old Style", Georgia, serif;
+    --body: "Source Sans 3", "Helvetica Neue", Arial, sans-serif;
+    --mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+    color-scheme: dark;
+  }
+  @media (prefers-color-scheme: light) {
+    :root:not([data-theme="dark"]) {
+      --bg: #f6f2ea; --bg-raised: #fffdf8; --bg-sunken: #ebe5da; --line: #d9d0c2;
+      --ink: #221d18; --ink-dim: #6d655b;
+      --clf: #b07a16; --clf-dim: #e6cf9c; --lik: #2f6f99; --lik-dim: #a9c8de;
+      --neg: #9a6a8d; --mid: #c9c1b4; --pos: #c98a12; --focus: #221d18;
+      color-scheme: light;
+    }
+  }
+  :root[data-theme="light"] {
+    --bg: #f6f2ea; --bg-raised: #fffdf8; --bg-sunken: #ebe5da; --line: #d9d0c2;
+    --ink: #221d18; --ink-dim: #6d655b;
+    --clf: #b07a16; --clf-dim: #e6cf9c; --lik: #2f6f99; --lik-dim: #a9c8de;
+    --neg: #9a6a8d; --mid: #c9c1b4; --pos: #c98a12; --focus: #221d18;
+    color-scheme: light;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--ink);
+    font-family: var(--body); font-size: 16px; line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+  }
+  .wrap { max-width: 1080px; margin: 0 auto; padding-block: 2rem 4rem; padding-inline: 16px; }
+  header { max-width: 66ch; }
+  h1 { font-family: var(--display); font-weight: 400; font-size: clamp(1.8rem, 4.5vw, 2.8rem);
+       line-height: 1.12; margin: 0 0 .6rem; text-wrap: balance; }
+  h2 { font-family: var(--display); font-weight: 600; font-size: 1.25rem; margin: 2.4rem 0 .6rem; text-wrap: balance; }
+  p { margin: 0 0 .9rem; }
+  .lede { font-size: 1.05rem; color: var(--ink); }
+  .eyebrow { font-family: var(--mono); font-size: .72rem; letter-spacing: .08em; text-transform: uppercase; color: var(--ink-dim); }
+  .legend { display: flex; flex-wrap: wrap; gap: .4rem 1.4rem; font-size: .9rem; color: var(--ink-dim); margin: .4rem 0 0; }
+  .legend span::before { content: ""; display: inline-block; width: 22px; height: 3px; border-radius: 2px; margin-right: .5rem; vertical-align: middle; }
+  .legend .l-clf::before { background: var(--clf); }
+  .legend .l-lik::before { background: var(--lik); }
+  .legend .l-tok::before { background: var(--lik); opacity: .45; height: 2px; }
+  .legend .l-chunk::before { background: transparent; border-top: 2px dashed var(--ink-dim); height: 0; }
+
+  .pick { display: flex; flex-wrap: wrap; gap: .4rem; margin: 1.2rem 0 1rem; }
+  .pick button, .play {
+    font: inherit; cursor: pointer; color: var(--ink-dim); background: var(--bg-raised);
+    border: 1px solid var(--line); border-radius: 999px; padding: .3rem .8rem;
+  }
+  .pick button[aria-pressed="true"] { color: var(--ink); border-color: var(--ink-dim); background: var(--bg-sunken); }
+  .pick button:hover, .play:hover { color: var(--ink); }
+  button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+
+  .panel { background: var(--bg-raised); border: 1px solid var(--line); border-radius: 10px; padding: 1rem 1.1rem 1.1rem; }
+  .track-head { display: flex; flex-wrap: wrap; justify-content: space-between; gap: .4rem 1.5rem; align-items: baseline; }
+  .track-head .name { font-family: var(--display); font-size: 1.35rem; }
+  .track-head .name .sub { color: var(--ink-dim); font-style: italic; margin-left: .6rem; font-size: 1.05rem; }
+  .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: .6rem 1rem; margin-top: .8rem; }
+  .stat .k { font-family: var(--mono); font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-dim); }
+  .stat .v { font-family: var(--mono); font-size: .95rem; font-variant-numeric: tabular-nums; }
+  .stat .v.clf { color: var(--clf); } .stat .v.lik { color: var(--lik); }
+
+  canvas { display: block; width: 100%; max-width: 100%; border-radius: 6px; background: var(--bg-sunken); }
+  #curve { height: 220px; margin-top: .8rem; touch-action: none; }
+  .hint { font-size: .82rem; color: var(--ink-dim); margin: .4rem 0 0; }
+  .rolls { display: grid; gap: .5rem; margin-top: .8rem; }
+  .roll-row { display: grid; grid-template-columns: 7.5rem 1fr; gap: .6rem; align-items: center; }
+  .roll-row .lab { font-size: .85rem; line-height: 1.25; }
+  .roll-row .lab b { display: block; font-family: var(--mono); font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; }
+  .roll-row .lab.clf b { color: var(--clf); } .roll-row .lab.lik b { color: var(--lik); }
+  .roll-row canvas { height: 96px; }
+  .scale { display: flex; align-items: center; gap: .6rem; font-family: var(--mono); font-size: .72rem; color: var(--ink-dim); margin-top: .5rem; }
+  .scale i { display: inline-block; width: 140px; height: 8px; border-radius: 4px;
+             background: linear-gradient(90deg, var(--neg), var(--mid), var(--pos)); }
+
+  .clips { display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-top: .8rem; }
+  .clip { display: grid; grid-template-columns: auto 1fr; grid-template-rows: auto auto; gap: .35rem .6rem; align-items: center; min-width: 0; }
+  .clip .cap { grid-column: 1 / -1; font-size: .92rem; }
+  .clip .cap b { font-family: var(--mono); font-size: .7rem; letter-spacing: .06em; text-transform: uppercase; margin-right: .5rem; }
+  .clip .cap .z { font-family: var(--mono); font-size: .75rem; color: var(--ink-dim); margin-left: .4rem; }
+  .clip.clf .cap b { color: var(--clf); } .clip.lik .cap b { color: var(--lik); }
+  .clip canvas { grid-column: 2; grid-row: 2; height: 140px; touch-action: none; cursor: pointer; }
+  .play { grid-column: 1; grid-row: 2; width: 2.4rem; height: 2.4rem; padding: 0; display: grid; place-items: center; font-size: .9rem; }
+  .play[aria-pressed="true"] { color: var(--ink); border-color: var(--ink-dim); }
+
+  .table-wrap { overflow-x: auto; margin-top: .8rem; }
+  table { border-collapse: collapse; width: 100%; font-size: .9rem; font-variant-numeric: tabular-nums; }
+  th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  th { font-family: var(--mono); font-size: .68rem; letter-spacing: .06em; text-transform: uppercase; color: var(--ink-dim); font-weight: 500; }
+  td.num { font-family: var(--mono); font-size: .82rem; }
+  tbody tr { cursor: pointer; }
+  tbody tr:hover td { background: var(--bg-sunken); }
+  tbody tr[aria-selected="true"] td { background: var(--bg-sunken); color: var(--ink); }
+  td .rho { display: inline-block; min-width: 3.2em; }
+  td .bar { display: inline-block; height: 8px; border-radius: 2px; vertical-align: middle; }
+  .notes { max-width: 70ch; }
+  .notes p { color: var(--ink); }
+  .notes code { font-family: var(--mono); font-size: .85em; }
+  .status:empty { display: none; }
+  .status { font-size: .82rem; color: var(--ink-dim); margin-top: .5rem; }
+  @media (max-width: 640px) {
+    .clips { grid-template-columns: 1fr; }
+    .roll-row { grid-template-columns: 1fr; }
+    .roll-row .lab { display: flex; gap: .6rem; align-items: baseline; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div class="eyebrow">Jazz pianist style · PiJAMA-12 held-out recordings</div>
+    <h1>Where the style lives, two ways</h1>
+    <p class="lede">
+      The paper's companion page asks its pianist <em>classifier</em> where in a
+      performance it is most and least sure of the pianist. This page asks the
+      paper's conditioned <em>generator</em> the same question: at each moment,
+      how much better does the true pianist's label predict the notes than the
+      strongest rival label? Both curves use the same 1024-token windows, the same
+      within-track z-score and the same smoothing, so they can be laid on top of
+      each other. Pick a pianist, then listen to the four passages each method
+      singles out.
+    </p>
+  </header>
+
+  <div class="pick" id="pick" role="group" aria-label="Choose a pianist"></div>
+
+  <section class="panel">
+    <div class="track-head">
+      <div class="name" id="title"></div>
+      <div class="eyebrow" id="duration"></div>
+    </div>
+    <div class="stats" id="stats"></div>
+    <canvas id="curve" aria-label="Both characteristic-region curves over the performance"></canvas>
+    <div class="legend">
+      <span class="l-clf">classifier logit margin (paper)</span>
+      <span class="l-lik">generator likelihood margin, same windows</span>
+      <span class="l-tok">token-level likelihood evidence (σ ≈ 10 notes)</span>
+      <span class="l-chunk">generator context reset (4096 tokens)</span>
+    </div>
+    <p class="hint">Click or drag inside a shaded passage to play from that point. Dots mark each method's peak and trough.</p>
+
+    <div class="rolls">
+      <div class="roll-row">
+        <div class="lab clf"><b>Classifier</b>every note, coloured by the window score at that moment</div>
+        <canvas id="roll-clf" aria-label="Piano roll coloured by the classifier's score"></canvas>
+      </div>
+      <div class="roll-row">
+        <div class="lab lik"><b>Likelihood</b>every note, coloured by its own token-level evidence</div>
+        <canvas id="roll-lik" aria-label="Piano roll coloured by the generator's token-level evidence"></canvas>
+      </div>
+    </div>
+    <div class="scale"><span>least</span><i></i><span>most characteristic (within-track z, −2 … +2)</span></div>
+
+    <div class="clips" id="clips"></div>
+    <p class="status" id="status"></p>
+  </section>
+
+  <h2>All twelve recordings</h2>
+  <p>Spearman ρ between the two window curves, and where each method puts its peak. Click a row to open it.</p>
+  <div class="table-wrap panel"><table id="table">
+    <thead><tr>
+      <th>Pianist</th><th>Recording</th><th>ρ</th>
+      <th>Classifier peak · trough</th><th>Likelihood peak · trough</th>
+      <th>Rival label (classifier · likelihood)</th><th>Margin spread</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <p class="hint" id="table-note"></p>
+
+  <section class="notes">
+    <h2>How the two curves are made</h2>
+    <p><b style="color:var(--clf)">Classifier</b> (paper, Section 7): the Aria-based pianist
+      classifier reads each 1024-token window (about 300 notes) and we take its logit for the
+      true pianist minus its strongest other logit. Windows advance 128 tokens, so neighbours
+      overlap by 87%. The margins are z-scored within the track and smoothed with a Gaussian
+      of 1.5 windows.</p>
+    <p><b style="color:var(--lik)">Likelihood</b> (this experiment): the paper's cross-attention
+      generator scores the same windows under every artist label with teacher forcing. The
+      margin is Σ log p(token | true pianist) − max over rivals of Σ log p(token | rival),
+      then the identical z-score and smoothing. The faint trace and the second piano roll use
+      the per-token evidence against the track's runner-up label, smoothed over about ten
+      notes, a resolution the window method cannot reach.</p>
+    <p>The generator scores 4096-token chunks independently, so its context resets at the
+      dashed lines. <span id="boundary-note"></span></p>
+    <p class="hint" id="provenance"></p>
+  </section>
+</div>
+
+<script type="application/json" id="payload">__DATA__</script>
+<script>
+(() => {
+  "use strict";
+  const DATA = JSON.parse(document.getElementById("payload").textContent);
+  const tracks = DATA.tracks;
+  const EXCERPT_MS = DATA.excerpt_ms || 15000;
+  const el = (id) => document.getElementById(id);
+  const clamp = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+  const fmt = (sec) => `${Math.floor(sec / 60)}:${String(Math.floor(sec % 60)).padStart(2, "0")}`;
+  const signed = (z) => (z >= 0 ? "+" : "−") + Math.abs(z).toFixed(2);
+  const METHODS = [["clf", "Classifier"], ["lik", "Likelihood"]];
+  const WHICH = [["peak", "most characteristic"], ["trough", "least characteristic"]];
+  const CLIP_KEYS = ["clf_peak", "clf_trough", "lik_peak", "lik_trough"];
+
+  const tok = () => {
+    const s = getComputedStyle(document.documentElement);
+    const g = (n) => s.getPropertyValue(n).trim();
+    return { line: g("--line"), dim: g("--ink-dim"), ink: g("--ink"), clf: g("--clf"), lik: g("--lik"),
+             clfDim: g("--clf-dim"), likDim: g("--lik-dim"), neg: g("--neg"), mid: g("--mid"), pos: g("--pos"),
+             focus: g("--focus"), sunken: g("--bg-sunken") };
+  };
+  const hex = (h) => { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; };
+  const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+  const rgb = (c) => `rgb(${c[0]},${c[1]},${c[2]})`;
+  function zColor(z, T) {
+    const t = clamp((z + 2) / 4, 0, 1);
+    const neg = hex(T.neg), mid = hex(T.mid), pos = hex(T.pos);
+    return rgb(t < 0.5 ? mix(neg, mid, t * 2) : mix(mid, pos, (t - 0.5) * 2));
+  }
+
+  /* ---------- audio: a small built-in piano, no external files ---------- */
+  let ctx = null, master = null;
+  function audio() {
+    if (!ctx) {
+      ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const lp = ctx.createBiquadFilter(); lp.type = "lowpass"; lp.frequency.value = 4200; lp.Q.value = 0.4;
+      master = ctx.createGain(); master.gain.value = 0.6;
+      master.connect(lp); lp.connect(ctx.destination);
+    }
+    if (ctx.state === "suspended") ctx.resume();
+    return ctx;
+  }
+  function noteOn(pitch, vel, at, dur) {
+    const f = 440 * Math.pow(2, (pitch - 69) / 12);
+    const g = ctx.createGain();
+    const peak = Math.pow(clamp(vel / 127, 0.08, 1), 1.4) * 0.32;
+    const hold = Math.max(0.06, dur);
+    g.gain.setValueAtTime(0.0001, at);
+    g.gain.exponentialRampToValueAtTime(peak, at + 0.006);
+    g.gain.exponentialRampToValueAtTime(Math.max(0.0001, peak * 0.35), at + Math.min(hold, 0.6));
+    g.gain.setValueAtTime(Math.max(0.0001, peak * 0.35 * Math.exp(-Math.max(0, hold - 0.6) * 1.1)), at + hold);
+    g.gain.exponentialRampToValueAtTime(0.0001, at + hold + 0.18);
+    g.connect(master);
+    const voices = [[1, "triangle", 1], [2, "sine", 0.35], [3.01, "sine", 0.08]];
+    for (const [mult, type, amp] of voices) {
+      const o = ctx.createOscillator(); o.type = type; o.frequency.value = f * mult;
+      const og = ctx.createGain(); og.gain.value = amp * (mult > 1 ? Math.exp(-(pitch - 40) / 40) : 1);
+      o.connect(og); og.connect(g);
+      o.start(at); o.stop(at + hold + 0.25);
+    }
+  }
+  // One voice for the page: plays a flat note list [start_ms, dur_ms, pitch, vel, ...]
+  const voice = (() => {
+    let notes = [], playing = false, startedAt = 0, offsetMs = 0, scheduledMs = 0, endMs = EXCERPT_MS;
+    let onEnded = null;
+    const nowMs = () => (playing ? offsetMs + (ctx.currentTime - startedAt) * 1000 : offsetMs);
+    function pump() {
+      if (!playing) return;
+      const cur = nowMs(), until = cur + 200;
+      for (let i = 0; i < notes.length; i += 4) {
+        const s = notes[i];
+        if (s < scheduledMs) continue;
+        if (s >= until) break;
+        noteOn(notes[i + 2], notes[i + 3], ctx.currentTime + Math.max(0, (s - cur) / 1000), notes[i + 1] / 1000);
+      }
+      scheduledMs = Math.max(scheduledMs, until);
+      if (cur >= endMs) { playing = false; offsetMs = endMs; onEnded && onEnded(); }
+    }
+    setInterval(pump, 50);
+    return {
+      play(list, fromMs, end) {
+        audio(); notes = list; endMs = end || EXCERPT_MS;
+        offsetMs = clamp(fromMs, 0, endMs); scheduledMs = offsetMs; startedAt = ctx.currentTime; playing = true; pump();
+      },
+      stop() { if (playing) { offsetMs = nowMs(); playing = false; } },
+      seek(ms) { offsetMs = clamp(ms, 0, endMs); scheduledMs = offsetMs; startedAt = ctx ? ctx.currentTime : 0; },
+      nowMs, get playing() { return playing; }, set onEnded(fn) { onEnded = fn; },
+    };
+  })();
+
+  /* ---------- state ---------- */
+  let active = 0, currentClip = null;   // currentClip: one of CLIP_KEYS
+  const track = () => tracks[active];
+  const clipOf = (key) => track().excerpts[key];
+
+  /* ---------- canvases ---------- */
+  function fit(canvas) {
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth, h = canvas.clientHeight;
+    if (canvas.width !== Math.round(w * dpr) || canvas.height !== Math.round(h * dpr)) {
+      canvas.width = Math.round(w * dpr); canvas.height = Math.round(h * dpr);
+    }
+    const c = canvas.getContext("2d");
+    c.setTransform(dpr, 0, 0, dpr, 0, 0);
+    return [c, w, h];
+  }
+  const playheadSec = () => (currentClip ? clipOf(currentClip).start_s + voice.nowMs() / 1000 : null);
+
+  function drawCurve() {
+    const t = track(), T = tok();
+    const [c, w, h] = fit(el("curve"));
+    const padT = 16, padB = 20, padL = 4, padR = 4;
+    const zMax = Math.max(2.2, ...t.clf_curve.map(Math.abs), ...t.lik_curve.map(Math.abs)) + 0.3;
+    const span = Math.max(1, t.duration_s);
+    const xOf = (s) => padL + (s / span) * (w - padL - padR);
+    const yOf = (z) => padT + (1 - (clamp(z, -zMax, zMax) + zMax) / (2 * zMax)) * (h - padT - padB);
+    c.clearRect(0, 0, w, h);
+
+    // shaded excerpts, tinted by method
+    for (const key of CLIP_KEYS) {
+      const e = t.excerpts[key];
+      const x0 = xOf(e.start_s), x1 = xOf(e.start_s + EXCERPT_MS / 1000);
+      c.globalAlpha = currentClip === key ? 0.28 : 0.11;
+      c.fillStyle = key.startsWith("clf") ? T.clf : T.lik;
+      c.fillRect(x0, 0, x1 - x0, h - padB + 4);
+    }
+    c.globalAlpha = 1;
+
+    // chunk boundaries (generator context resets)
+    c.strokeStyle = T.dim; c.setLineDash([3, 4]); c.lineWidth = 1;
+    for (const s of t.chunk_starts_s.slice(1)) {
+      const x = Math.round(xOf(s)) + 0.5;
+      c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h - padB + 4); c.stroke();
+    }
+    // guides
+    c.strokeStyle = T.line;
+    for (const z of [-2, -1, 1, 2]) {
+      if (Math.abs(z) > zMax) continue;
+      const y = Math.round(yOf(z)) + 0.5;
+      c.setLineDash([2, 4]); c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
+    }
+    c.setLineDash([]);
+    const y0 = Math.round(yOf(0)) + 0.5;
+    c.beginPath(); c.moveTo(0, y0); c.lineTo(w, y0); c.stroke();
+
+    const line = (times, curve, color, width, alpha) => {
+      c.globalAlpha = alpha; c.strokeStyle = color; c.lineWidth = width; c.lineJoin = "round";
+      c.beginPath();
+      times.forEach((s, i) => { const x = xOf(s), y = yOf(curve[i]); i ? c.lineTo(x, y) : c.moveTo(x, y); });
+      c.stroke(); c.globalAlpha = 1;
+    };
+    line(t.tok_times, t.tok_curve, T.lik, 1, 0.35);
+    line(t.clf_times, t.clf_curve, T.clf, 2.2, 1);
+    line(t.lik_times, t.lik_curve, T.lik, 2.2, 1);
+
+    // peak / trough markers
+    c.font = `10.5px ${getComputedStyle(document.body).getPropertyValue("--mono")}`;
+    for (const key of CLIP_KEYS) {
+      const e = t.excerpts[key], isClf = key.startsWith("clf");
+      const x = xOf(e.time_s), y = yOf(e.z);
+      c.fillStyle = isClf ? T.clf : T.lik;
+      c.beginPath(); c.arc(x, y, 4.5, 0, Math.PI * 2); c.fill();
+      c.strokeStyle = T.sunken; c.lineWidth = 1.5; c.stroke();
+    }
+    // axis
+    c.fillStyle = T.dim;
+    const step = [30, 60, 120, 300].find((st) => (st / span) * w >= 56) || 300;
+    for (let s = 0; s <= span; s += step) {
+      const label = fmt(s), tw = c.measureText(label).width;
+      c.fillText(label, clamp(xOf(s) - tw / 2, 1, w - tw - 1), h - 5);
+    }
+    c.fillStyle = T.dim; c.fillText("z", 6, padT - 4);
+
+    const ph = playheadSec();
+    if (ph != null) {
+      const x = Math.round(xOf(ph)) + 0.5;
+      c.strokeStyle = T.focus; c.globalAlpha = 0.75; c.lineWidth = 1;
+      c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h - padB + 4); c.stroke(); c.globalAlpha = 1;
+    }
+  }
+
+  function drawFullRoll(canvas, method) {
+    const t = track(), T = tok();
+    const [c, w, h] = fit(canvas);
+    const notes = t.roll, zi = method === "clf" ? 4 : 5;
+    const span = Math.max(1, t.duration_s) * 1000;
+    let lo = 108, hi = 21;
+    for (let i = 0; i < notes.length; i += 6) { lo = Math.min(lo, notes[i + 2]); hi = Math.max(hi, notes[i + 2]); }
+    lo = Math.max(21, lo - 2); hi = Math.min(108, hi + 2);
+    const yOf = (p) => h - ((p - lo) / (hi - lo)) * (h - 6) - 3;
+    const xOf = (ms) => (ms / span) * w;
+    c.clearRect(0, 0, w, h);
+    c.strokeStyle = T.line; c.lineWidth = 1;
+    for (let p = 24; p <= hi; p += 12) {
+      if (p < lo) continue;
+      const y = Math.round(yOf(p)) + 0.5; c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
+    }
+    const nh = Math.max(1.5, Math.min(4, (h - 6) / (hi - lo) * 1.5));
+    for (let i = 0; i < notes.length; i += 6) {
+      const x = xOf(notes[i]), wd = Math.max(1, (notes[i + 1] / span) * w);
+      c.fillStyle = zColor(notes[i + zi], T);
+      c.fillRect(x, yOf(notes[i + 2]) - nh / 2, wd, nh);
+    }
+    // the two excerpts this method chose
+    for (const which of ["peak", "trough"]) {
+      const key = `${method}_${which}`, e = t.excerpts[key];
+      const x0 = xOf(e.start_s * 1000), x1 = xOf((e.start_s + EXCERPT_MS / 1000) * 1000);
+      c.strokeStyle = which === "peak" ? T.pos : T.neg; c.lineWidth = currentClip === key ? 2 : 1;
+      c.strokeRect(Math.round(x0) + 0.5, 0.5, Math.round(x1 - x0), h - 1);
+    }
+    const ph = playheadSec();
+    if (ph != null) {
+      const x = Math.round(xOf(ph * 1000)) + 0.5;
+      c.strokeStyle = T.focus; c.globalAlpha = 0.75; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke(); c.globalAlpha = 1;
+    }
+  }
+
+  const clipCanvases = {};
+  function pitchRange() {
+    let lo = 108, hi = 21;
+    for (const key of CLIP_KEYS) {
+      const n = clipOf(key).notes;
+      for (let i = 2; i < n.length; i += 4) { lo = Math.min(lo, n[i]); hi = Math.max(hi, n[i]); }
+    }
+    return hi < lo ? [21, 108] : [Math.max(21, lo - 3), Math.min(108, hi + 3)];
+  }
+  function drawClips() {
+    const T = tok(), [lo, hi] = pitchRange();
+    for (const key of CLIP_KEYS) {
+      const [c, w, h] = fit(clipCanvases[key]);
+      const notes = clipOf(key).notes, isClf = key.startsWith("clf"), isPeak = key.endsWith("peak");
+      const nowMs = currentClip === key ? voice.nowMs() : 0;
+      const yOf = (p) => h - ((p - lo) / (hi - lo)) * (h - 8) - 4;
+      const xOf = (ms) => (ms / EXCERPT_MS) * w;
+      c.clearRect(0, 0, w, h);
+      c.strokeStyle = T.line; c.lineWidth = 1;
+      for (let p = 24; p <= hi; p += 12) {
+        if (p < lo) continue;
+        const y = Math.round(yOf(p)) + 0.5; c.beginPath(); c.moveTo(0, y); c.lineTo(w, y); c.stroke();
+      }
+      const nh = Math.max(2.5, Math.min(6, (h - 8) / (hi - lo) * 1.6));
+      const color = isPeak ? (isClf ? T.clf : T.lik) : T.neg;
+      for (let i = 0; i < notes.length; i += 4) {
+        const s = notes[i], d = notes[i + 1], p = notes[i + 2];
+        c.globalAlpha = s <= nowMs ? 1 : 0.45;
+        c.fillStyle = color;
+        c.beginPath();
+        c.roundRect ? c.roundRect(xOf(s), yOf(p) - nh / 2, Math.max(2, xOf(d)), nh, 2) : c.rect(xOf(s), yOf(p) - nh / 2, Math.max(2, xOf(d)), nh);
+        c.fill();
+      }
+      c.globalAlpha = 1;
+      if (currentClip === key) {
+        const x = Math.round(xOf(nowMs)) + 0.5;
+        c.strokeStyle = T.focus; c.globalAlpha = 0.8; c.beginPath(); c.moveTo(x, 0); c.lineTo(x, h); c.stroke(); c.globalAlpha = 1;
+      }
+    }
+  }
+  function drawAll() { drawCurve(); drawFullRoll(el("roll-clf"), "clf"); drawFullRoll(el("roll-lik"), "lik"); drawClips(); }
+
+  /* ---------- playback ---------- */
+  const playButtons = {};
+  function setPressed(key, on) { if (playButtons[key]) { playButtons[key].setAttribute("aria-pressed", String(on)); playButtons[key].innerHTML = on ? "&#10073;&#10073;" : "&#9654;"; } }
+  function play(key, fromMs = null) {
+    voice.stop();
+    if (currentClip && currentClip !== key) setPressed(currentClip, false);
+    let start = fromMs;
+    if (start == null) start = (currentClip === key && voice.nowMs() < EXCERPT_MS) ? voice.nowMs() : 0;
+    currentClip = key;
+    voice.play(clipOf(key).notes, start, EXCERPT_MS);
+    setPressed(key, true);
+    drawAll();
+  }
+  function pause() { voice.stop(); if (currentClip) setPressed(currentClip, false); drawAll(); }
+  voice.onEnded = () => { if (currentClip) setPressed(currentClip, false); drawAll(); };
+  function seekClip(key, ms) {
+    ms = clamp(ms, 0, EXCERPT_MS);
+    if (currentClip === key && voice.playing) { voice.seek(ms); drawAll(); }
+    else play(key, ms);
+  }
+
+  function draggable(canvas, hit) {
+    let drag = null;
+    canvas.addEventListener("pointerdown", (ev) => {
+      const h = hit(ev); if (!h) return;
+      drag = h.key; canvas.setPointerCapture(ev.pointerId); seekClip(h.key, h.ms);
+    });
+    canvas.addEventListener("pointermove", (ev) => {
+      if (drag) { const h = hit(ev, drag); if (h) seekClip(drag, h.ms); }
+      else canvas.style.cursor = hit(ev) ? "pointer" : "default";
+    });
+    const end = () => { drag = null; };
+    canvas.addEventListener("pointerup", end); canvas.addEventListener("pointercancel", end);
+  }
+  draggable(el("curve"), (ev, lock) => {
+    const t = track(), r = el("curve").getBoundingClientRect();
+    const sec = ((ev.clientX - r.left - 4) / (r.width - 8)) * Math.max(1, t.duration_s);
+    if (lock) return { key: lock, ms: (sec - t.excerpts[lock].start_s) * 1000 };
+    for (const key of CLIP_KEYS) {
+      const s0 = t.excerpts[key].start_s;
+      if (sec >= s0 && sec <= s0 + EXCERPT_MS / 1000) return { key, ms: (sec - s0) * 1000 };
+    }
+    return null;
+  });
+
+  /* ---------- UI ---------- */
+  function buildClips() {
+    const host = el("clips");
+    for (const [m, mName] of METHODS) for (const [wh, whName] of WHICH) {
+      const key = `${m}_${wh}`;
+      const div = document.createElement("div"); div.className = `clip ${m}`;
+      div.innerHTML = `<div class="cap" id="cap-${key}"></div>` +
+        `<button class="play" id="play-${key}" aria-label="Play" aria-pressed="false">&#9654;</button>` +
+        `<canvas id="clip-${key}" aria-label="Piano roll: ${mName}, ${whName}"></canvas>`;
+      host.appendChild(div);
+      clipCanvases[key] = el(`clip-${key}`);
+      playButtons[key] = el(`play-${key}`);
+      playButtons[key].addEventListener("click", () => (currentClip === key && voice.playing ? pause() : play(key)));
+      draggable(clipCanvases[key], (ev) => {
+        const r = clipCanvases[key].getBoundingClientRect();
+        return { key, ms: ((ev.clientX - r.left) / r.width) * EXCERPT_MS };
+      });
+    }
+  }
+
+  function select(idx) {
+    voice.stop(); if (currentClip) setPressed(currentClip, false); currentClip = null;
+    active = idx;
+    const t = track();
+    [...el("pick").children].forEach((b, i) => b.setAttribute("aria-pressed", String(i === idx)));
+    [...el("table").tBodies[0].rows].forEach((r, i) => r.setAttribute("aria-selected", String(i === idx)));
+    el("title").innerHTML = `<b>${t.artist}</b><span class="sub">${t.title}</span>`;
+    el("duration").textContent = `${fmt(t.duration_s)} · ${t.n_tokens.toLocaleString()} tokens · ${t.n_windows} windows`;
+    const agree = Math.abs(t.excerpts.clf_peak.time_s - t.excerpts.lik_peak.time_s) <= EXCERPT_MS / 1000;
+    el("stats").innerHTML = [
+      ["Agreement of the two curves", `Spearman ρ ${signed(t.spearman).replace(/^\+/, "")}`, ""],
+      ["Classifier margin across windows", `${t.classifier_margin_mean.toFixed(1)} ± ${t.classifier_margin_std.toFixed(2)} logits`, "clf"],
+      ["Likelihood margin across windows", `${t.window_margin_mean.toFixed(1)} ± ${t.window_margin_std.toFixed(1)} nats`, "lik"],
+      ["Rival label", `${t.classifier_runner_up || "—"} <span style="color:var(--ink-dim)">·</span> ${t.runner_up}`, ""],
+      ["Whole-track likelihood margin", `${t.track_margin_nats.toFixed(0)} nats over the rival`, "lik"],
+      ["Peaks", agree ? "within one excerpt of each other" : `${fmt(t.excerpts.clf_peak.time_s)} vs ${fmt(t.excerpts.lik_peak.time_s)}`, ""],
+    ].map(([k, v, cls]) => `<div class="stat"><div class="k">${k}</div><div class="v ${cls}">${v}</div></div>`).join("");
+    for (const [m, mName] of METHODS) for (const [wh, whName] of WHICH) {
+      const key = `${m}_${wh}`, e = t.excerpts[key];
+      el(`cap-${key}`).innerHTML = `<b>${mName}</b>${whName}` +
+        `<span class="z">${fmt(e.start_s)}–${fmt(e.start_s + EXCERPT_MS / 1000)} · z ${signed(e.z)}</span>`;
+    }
+    drawAll();
+  }
+
+  function buildTable() {
+    const body = el("table").tBodies[0];
+    tracks.forEach((t, i) => {
+      const tr = document.createElement("tr");
+      const bar = (rho) => `<span class="bar" style="width:${Math.abs(rho) * 40}px;background:${rho >= 0 ? "var(--pos)" : "var(--neg)"}"></span>`;
+      tr.innerHTML = `<td>${t.artist}</td><td title="${t.title}">${t.title.length > 34 ? t.title.slice(0, 32) + "…" : t.title}</td>` +
+        `<td class="num"><span class="rho">${signed(t.spearman).replace(/^\+/, "")}</span> ${bar(t.spearman)}</td>` +
+        `<td class="num">${fmt(t.excerpts.clf_peak.time_s)} · ${fmt(t.excerpts.clf_trough.time_s)}</td>` +
+        `<td class="num">${fmt(t.excerpts.lik_peak.time_s)} · ${fmt(t.excerpts.lik_trough.time_s)}</td>` +
+        `<td>${t.classifier_runner_up || "—"} · ${t.runner_up}</td>` +
+        `<td class="num">${t.classifier_margin_std.toFixed(2)} logits · ${t.window_margin_std.toFixed(1)} nats</td>`;
+      tr.addEventListener("click", () => { select(i); el("title").scrollIntoView({ behavior: "smooth", block: "start" }); });
+      body.appendChild(tr);
+    });
+    const rhos = tracks.map((t) => t.spearman);
+    const neg = rhos.filter((r) => r < 0).length;
+    const mean = rhos.reduce((a, b) => a + b, 0) / rhos.length;
+    const within = tracks.filter((t) => Math.abs(t.excerpts.clf_peak.time_s - t.excerpts.lik_peak.time_s) <= EXCERPT_MS / 1000).length;
+    el("table-note").textContent = `Mean ρ ${signed(mean)}; ${neg} of ${tracks.length} recordings negative. ` +
+      `The two peaks fall within one excerpt of each other on ${within} of ${tracks.length}. ` +
+      `Margin spread is the within-track standard deviation each method's z-score divides by.`;
+  }
+
+  function buildNotes() {
+    const b = DATA.boundary || [];
+    if (b.length) {
+      const first = b[0].mean_margin_nats, last = b[b.length - 1].mean_margin_nats;
+      const mid = b[Math.floor(b.length / 2)].mean_margin_nats;
+      el("boundary-note").textContent = `Across all 177 test sequences the per-token margin over the runner-up label is ` +
+        `${first.toFixed(4)} nats in the first 128 tokens after a reset, ${mid.toFixed(4)} half way through a chunk and ` +
+        `${last.toFixed(4)} in the last 128, so the reset barely moves the curve.`;
+    }
+    const run = (DATA.config && DATA.config.run) || {};
+    el("provenance").textContent = `Generator: ${run.checkpoint || "checkpoints/generator"} scored on ${run.test_jsonl || "the PiJAMA-12 test split"} ` +
+      `(${run.num_sequences || "177"} sequences of 4096 tokens, ${run.dtype || "fp16"}). ` +
+      `Classifier curves from scripts/characteristic_regions.py; likelihood from scripts/likelihood_classify.py; ` +
+      `page data from scripts/site/build_likelihood_comparison.py. Playback is a small synthesiser in the page, not a piano recording.`;
+  }
+
+  tracks.forEach((t, i) => {
+    const b = document.createElement("button"); b.textContent = t.artist; b.setAttribute("aria-pressed", "false");
+    b.addEventListener("click", () => select(i)); el("pick").appendChild(b);
+  });
+  buildClips(); buildTable(); buildNotes();
+  select(Math.max(0, tracks.findIndex((t) => t.artist === "Art Tatum")));
+
+  window.addEventListener("resize", drawAll);
+  matchMedia("(prefers-color-scheme: dark)").addEventListener("change", drawAll);
+  new MutationObserver(drawAll).observe(document.documentElement, { attributes: true, attributeFilter: ["data-theme"] });
+  (function frame() { if (voice.playing) drawAll(); requestAnimationFrame(frame); })();
+})();
+</script>
