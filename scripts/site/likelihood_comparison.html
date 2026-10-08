@@ -154,6 +154,17 @@
     </p>
   </header>
 
+  <h2>Who played it: accuracy on the held-out test set</h2>
+  <p>Before asking <em>where</em> the style is, both methods are asked <em>who</em> is playing. Same 80 test
+    recordings, same artist labels; the classifier predicts from a 1024-token window, the likelihood method
+    picks the artist label under which the generator predicts the notes best.</p>
+  <div class="table-wrap panel"><table id="acc-table">
+    <thead><tr><th>unit</th><th>classifier (paper, §4.1)</th><th>generator likelihood (this page)</th><th>chance</th></tr></thead>
+    <tbody></tbody>
+  </table></div>
+  <p class="hint" id="acc-note"></p>
+
+  <h2>Where the style lives</h2>
   <div class="pick" id="pick" role="group" aria-label="Choose a pianist"></div>
   <div class="pick tracks" id="pick-track" role="group" aria-label="Choose a recording"></div>
 
@@ -189,7 +200,8 @@
   </section>
 
   <h2 id="all-head">All recordings</h2>
-  <p>Spearman ρ between the two window curves on every held-out test recording, and where each method puts its peak.
+  <p>This table is about <em>where</em>, not <em>who</em>: ρ is the Spearman correlation between the classifier's curve and the
+    likelihood curve of the same recording (do they rise and fall in the same places?), and the columns give where each method puts its peak and trough.
     <span class="demo">●</span> marks the recordings the paper's companion page plays. Click a row to open it.</p>
   <div class="panel">
     <p class="summary" id="summary-line"></p>
@@ -225,10 +237,12 @@
 </div>
 
 <script type="application/json" id="payload">__DATA__</script>
+<script type="application/json" id="accuracy">__ACC__</script>
 <script>
 (() => {
   "use strict";
   const DATA = JSON.parse(document.getElementById("payload").textContent);
+  const ACC = JSON.parse(document.getElementById("accuracy").textContent || "null");
   const tracks = DATA.tracks;
   const EXCERPT_MS = DATA.excerpt_ms || 15000;
   const el = (id) => document.getElementById(id);
@@ -575,7 +589,7 @@
     el("duration").textContent = `${fmt(t.duration_s)} · ${t.n_tokens.toLocaleString()} tokens · ${t.n_windows} windows`;
     const agree = Math.abs(t.excerpts.clf_peak.time_s - t.excerpts.lik_peak.time_s) <= EXCERPT_MS / 1000;
     el("stats").innerHTML = [
-      ["Agreement of the two curves", t.spearman == null ? "undefined (fewer than 3 windows)" : `Spearman ρ ${signed(t.spearman).replace(/^\+/, "")}`, ""],
+      ["Do the two curves agree? (Spearman ρ)", t.spearman == null ? "undefined (fewer than 3 windows)" : signed(t.spearman).replace(/^\+/, ""), ""],
       ["Classifier margin across windows", `${t.classifier_margin_mean.toFixed(1)} ± ${t.classifier_margin_std.toFixed(2)} logits`, "clf"],
       ["Likelihood margin across windows", `${t.window_margin_mean.toFixed(1)} ± ${t.window_margin_std.toFixed(1)} nats`, "lik"],
       ["Rival label", `${t.classifier_runner_up || "—"} <span style="color:var(--ink-dim)">·</span> ${t.runner_up}`, ""],
@@ -658,6 +672,25 @@
     c.fillStyle = T.dim; c.fillText("ρ = 0", zx + 5, padT + 6);
   }
 
+  function buildAccuracy() {
+    if (!ACC || !ACC.topk) return;
+    const pct = (x) => (x == null ? "—" : `${(100 * x).toFixed(1)}%`);
+    const k = ACC.topk, chance = `${(100 / ACC.num_artists).toFixed(1)}%`;
+    const row = (label, clf, lik, note) =>
+      `<tr><td>${label}${note ? ` <span class="hint">${note}</span>` : ""}</td>` +
+      `<td class="num">${clf}</td><td class="num">${lik}</td><td class="num">${chance}</td></tr>`;
+    const top = (block, m) => block && block[m] ? `${pct(block[m].top1)} <span class="hint">(top-3 ${pct(block[m].top3)})</span>` : "—";
+    el("acc-table").tBodies[0].innerHTML =
+      row(`1024-token chunk, n=${k.chunk_all.classifier.n}`, top(k.chunk_all, "classifier"), top(k.chunk_all, "likelihood"), "the classifier's own evaluation unit") +
+      row(`same chunks, only those where both see the same context, n=${k.chunk_same_context.classifier.n}`, top(k.chunk_same_context, "classifier"), top(k.chunk_same_context, "likelihood"), "") +
+      row(`4096-token sequence, n=${k.seq4096.likelihood.n}`, "—", top(k.seq4096, "likelihood"), "the generator's unit") +
+      row(`whole recording, n=${k.track.classifier.n}`, top(k.track, "classifier"), top(k.track, "likelihood"), "chunks combined: logits summed / NLL summed");
+    el("acc-note").textContent = `Top-1 accuracy, with top-3 in brackets. The likelihood method needs no classifier training: it scores each ` +
+      `sequence under all ${ACC.num_artists} artist labels and keeps the best. Per chunk the trained classifier ranks better; ` +
+      `over a whole recording the likelihood catches up because its evidence adds up token by token ` +
+      `(${ACC.prefix_curve ? Object.entries(ACC.prefix_curve).map(([L, a]) => `${L} tokens ${pct(a)}`).join(", ") : ""}).`;
+  }
+
   function buildNotes() {
     const b = DATA.boundary || [];
     if (b.length) {
@@ -683,7 +716,7 @@
     const b = document.createElement("button"); b.textContent = artist; b.setAttribute("aria-pressed", "false");
     b.addEventListener("click", () => select(firstFor(artist))); el("pick").appendChild(b);
   });
-  buildClips(); buildTable(); buildNotes();
+  buildAccuracy(); buildClips(); buildTable(); buildNotes();
   select(Math.max(0, firstFor("Art Tatum")));
   drawHist();
 
