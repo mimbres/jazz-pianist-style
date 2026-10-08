@@ -185,6 +185,92 @@ def track_token_stream(rows, test_jsonl: Path, title_substring: str):
             "nll": nll[:, keep], "true_id": by_index[recs[0][0]]["true_id"]}
 
 
+def all_track_streams(rows, test_jsonl: Path):
+    """track_id -> per-token NLL (conditions, n) on the clean token stream, plus true_id."""
+    recs, by_track = {}, defaultdict(list)
+    with test_jsonl.open() as f:
+        for i, line in enumerate(f):
+            rec = json.loads(line)
+            recs[i] = rec
+            by_track[rec["metadata"]["track_id"]].append(i)
+    by_index = {r["index"]: r for r in rows}
+    streams = {}
+    for tid, idxs in by_track.items():
+        idxs.sort(key=lambda i: recs[i]["metadata"].get("chunk_idx", 0))
+        if any(i not in by_index for i in idxs):
+            continue
+        tokens, cols = [], []
+        for i in idxs:
+            seq, r = recs[i]["seq"], by_index[i]
+            n_scored = len(seq) - 1
+            c = np.full((r["nll"].shape[0], len(seq)), np.nan, dtype=np.float32)
+            c[:, 1:1 + n_scored] = r["nll"][:, :n_scored]
+            tokens.extend(seq)
+            cols.append(c)
+        keep = np.array([not (isinstance(t, str) and t in ("<S>", "<E>", "<P>")) for t in tokens])
+        streams[tid] = {"nll": np.nan_to_num(np.concatenate(cols, axis=1)[:, keep], nan=0.0),
+                        "true_id": by_index[idxs[0]]["true_id"]}
+    return streams
+
+
+def rank_of(scores_desc, true_id):
+    """1-based rank of the true class when classes are ordered by descending score."""
+    order = np.argsort(-np.asarray(scores_desc), kind="stable")
+    return int(np.where(order == true_id)[0][0]) + 1
+
+
+def topk_comparison(rows, test_jsonl: Path, clf_eval: Path, names, num_artists, chunk=1024, ks=(1, 2, 3)):
+    """Top-k accuracy of both methods on the classifier's own 1024-token chunks and per track.
+
+    The classifier's per-sample list follows the 1024-chunk test file in order, so
+    chunk k of a track covers clean-stream tokens [1024k, 1024k+1024). The
+    likelihood for that span is read off the per-token NLL arrays; spans that do
+    not start a 4096-token generator chunk carry up to 3072 tokens of extra
+    context, so the subset at offsets 0, 4096, ... is reported separately as the
+    like-for-like comparison.
+    """
+    if not clf_eval.exists():
+        return None
+    streams = all_track_streams(rows, test_jsonl)
+    d = json.loads(clf_eval.read_text())
+    per_track_counter = defaultdict(int)
+    chunks = []  # (track_id, k, clf_rank, lik_rank, same_context)
+    track_logits, track_nll = defaultdict(lambda: np.zeros(num_artists)), {}
+    for s in d["per_sample"]:
+        tid = s["track_id"]
+        k = per_track_counter[tid]
+        per_track_counter[tid] += 1
+        if tid not in streams:
+            continue
+        st = streams[tid]
+        true_id = names.index(s["true_artist"])
+        logits = np.asarray(s["logits"])
+        span = st["nll"][:num_artists, chunk * k: chunk * (k + 1)]
+        if span.shape[1] == 0:
+            continue
+        nll = span.sum(axis=1)
+        chunks.append((tid, k, rank_of(logits, true_id), rank_of(-nll, true_id), (chunk * k) % 4096 == 0))
+        track_logits[tid] += logits
+        track_nll[tid] = (st["nll"][:num_artists].sum(axis=1), true_id)
+
+    def acc(ranks):
+        ranks = np.asarray(ranks)
+        return {f"top{k}": float((ranks <= k).mean()) for k in ks} | {"mean_rank": float(ranks.mean()), "n": int(len(ranks))}
+
+    out = {
+        "chunk_all": {"classifier": acc([c[2] for c in chunks]), "likelihood": acc([c[3] for c in chunks])},
+        "chunk_same_context": {"classifier": acc([c[2] for c in chunks if c[4]]),
+                               "likelihood": acc([c[3] for c in chunks if c[4]])},
+    }
+    t_clf, t_lik = [], []
+    for tid, (nll, true_id) in track_nll.items():
+        t_clf.append(rank_of(track_logits[tid], true_id))
+        t_lik.append(rank_of(-nll, true_id))
+    out["track"] = {"classifier": acc(t_clf), "likelihood": acc(t_lik)}
+    out["seq4096"] = {"likelihood": acc([rank_of(-np.asarray(r["total_nll"][:num_artists]), r["true_id"]) for r in rows])}
+    return out
+
+
 def overlay(stream, regions_dir: Path, out_path: Path, num_artists: int, names, token_sigma: float):
     from scipy.ndimage import gaussian_filter1d
     from scipy.stats import spearmanr
@@ -314,17 +400,34 @@ def main():
                   f"- token-weighted perplexity: true label {gap['ppl_true_label']:.2f} "
                   f"(paper Table 2: 6.82), no context {gap['ppl_no_context']:.2f}", ""]
 
+    topk = topk_comparison(rows, args.test_jsonl, args.real_clf_eval, names, num_artists) if args.test_jsonl.exists() else None
+    if topk:
+        def cells(block, method):
+            a = block[method]
+            return " | ".join(fmt_pct(a[f"top{k}"]) for k in (1, 2, 3)) + f" | {a['mean_rank']:.2f}"
+        lines += ["## 4. Top-k accuracy on the classifier's own 1024-token chunks", "",
+                  "| unit | method | top-1 | top-2 | top-3 | mean rank of true pianist |",
+                  "|---|---|---|---|---|---|"]
+        for key, label in (("chunk_all", f"1024 chunk, all (n={topk['chunk_all']['classifier']['n']})"),
+                           ("chunk_same_context", f"1024 chunk at a generator chunk start, no extra context (n={topk['chunk_same_context']['classifier']['n']})"),
+                           ("track", f"track, logits summed / NLL summed (n={topk['track']['classifier']['n']})")):
+            lines.append(f"| {label} | classifier | {cells(topk[key], 'classifier')} |")
+            lines.append(f"| | likelihood | {cells(topk[key], 'likelihood')} |")
+        lines.append(f"| 4096 sequence (n={topk['seq4096']['likelihood']['n']}) | likelihood | {cells(topk['seq4096'], 'likelihood')} |")
+        lines += ["", "Likelihood chunks other than the first in each 4096-token generator chunk see up to 3072 "
+                  "tokens of preceding context that the classifier does not; the second row removes that advantage.", ""]
+
     out = {"config": config, "accuracy": {k: v for k, v in acc.items()
                                           if k not in ("confusion", "seq_true", "seq_pred", "margins")},
            "confusion": acc["confusion"].tolist(), "prefix_curve": prefix, "context_gap": gap,
-           "classifier_reference": clf}
+           "classifier_reference": clf, "topk": topk}
 
     stream = track_token_stream(rows, args.test_jsonl, args.overlay_track) if args.test_jsonl.exists() else None
     if stream:
         png = args.run_dir / f"{slugify(stream['artist'])}__{slugify(stream['title'])}__overlay.png"
         stats = overlay(stream, args.regions_dir, png, num_artists, names, args.token_sigma)
         out["overlay"] = stats
-        lines += [f"## 4. Where the style lives: {stats['artist']} — {stats['track']}", "",
+        lines += [f"## 5. Where the style lives: {stats['artist']} — {stats['track']}", "",
                   f"- windows: {stats['n_windows']} (1024 tokens, stride 128), runner-up label: {stats['runner_up']}",
                   f"- likelihood margin per window: mean {stats['window_margin_mean_nats']:.1f} nats, "
                   f"std {stats['window_margin_std_nats']:.1f}",
