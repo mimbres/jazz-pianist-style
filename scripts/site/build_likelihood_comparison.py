@@ -54,10 +54,66 @@ def parse_args():
     ap.add_argument("--real-clf-eval", type=Path, default=Path("results/pijama12_real_clf_eval.json"),
                     help="evaluate_classifier.py output; gives the classifier's runner-up per track")
     ap.add_argument("--out", type=Path, default=Path("results/likelihood_classify/comparison.json"))
+    ap.add_argument("--all-tracks", action="store_true",
+                    help="every test track, not only the site's twelve (the site's are flagged)")
     ap.add_argument("--excerpt-seconds", type=float, default=15.0)
     ap.add_argument("--token-sigma", type=float, default=32.0, help="tokens; ~10 notes")
     ap.add_argument("--max-curve-points", type=int, default=1500)
+    ap.add_argument("--figure", type=Path, default=None,
+                    help="also draw the ρ distribution (default: rho_distribution.png beside --out)")
     return ap.parse_args()
+
+
+def summarise(tracks, excerpt_s):
+    rho = np.array([t["spearman"] for t in tracks])
+    peak_gap = np.array([abs(t["excerpts"]["clf_peak"]["time_s"] - t["excerpts"]["lik_peak"]["time_s"]) for t in tracks])
+    trough_gap = np.array([abs(t["excerpts"]["clf_trough"]["time_s"] - t["excerpts"]["lik_trough"]["time_s"]) for t in tracks])
+    cross = np.array([abs(t["excerpts"]["clf_peak"]["time_s"] - t["excerpts"]["lik_trough"]["time_s"]) for t in tracks])
+    edges = np.linspace(-1, 1, 11)
+    by_artist = defaultdict(list)
+    for t in tracks:
+        by_artist[t["artist"]].append(t["spearman"])
+    return {
+        "n": len(tracks), "rho_mean": float(rho.mean()), "rho_median": float(np.median(rho)),
+        "rho_q1": float(np.percentile(rho, 25)), "rho_q3": float(np.percentile(rho, 75)),
+        "rho_min": float(rho.min()), "rho_max": float(rho.max()),
+        "frac_negative": float((rho < 0).mean()), "frac_abs_above_0.3": float((np.abs(rho) > 0.3).mean()),
+        "frac_above_0.3": float((rho > 0.3).mean()), "frac_below_minus_0.3": float((rho < -0.3).mean()),
+        "peaks_within_excerpt": int((peak_gap <= excerpt_s).sum()),
+        "troughs_within_excerpt": int((trough_gap <= excerpt_s).sum()),
+        "clf_peak_is_lik_trough": int((cross <= excerpt_s).sum()),
+        "histogram": {"edges": [round(e, 1) for e in edges],
+                      "counts": [int(c) for c in np.histogram(rho, bins=edges)[0]]},
+        "per_artist_mean_rho": {a: round(float(np.mean(v)), 2) for a, v in sorted(by_artist.items())},
+    }
+
+
+def draw_figure(tracks, summary, out_path: Path):
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    rho = np.array([t["spearman"] for t in tracks])
+    clf_peak = np.array([max(t["clf_curve"]) for t in tracks])
+    demo = np.array([t.get("demo", False) for t in tracks])
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4))
+    ax = axes[0]
+    ax.hist(rho, bins=summary["histogram"]["edges"], color="#7fb2d6", edgecolor="#1d1915")
+    ax.axvline(0, color="#e8604c", lw=1.5)
+    ax.axvline(summary["rho_median"], color="#555", lw=1, ls="--")
+    ax.set_xlabel("Spearman ρ, classifier curve vs likelihood curve (same windows)")
+    ax.set_ylabel("tracks")
+    ax.set_title(f"{summary['n']} test tracks: median ρ {summary['rho_median']:+.2f}, "
+                 f"{100 * summary['frac_negative']:.0f}% negative", fontsize=10)
+    ax = axes[1]
+    ax.scatter(clf_peak[~demo], rho[~demo], s=18, color="#a99f92", label="other test tracks")
+    ax.scatter(clf_peak[demo], rho[demo], s=28, color="#e0a33e", label="the site's twelve")
+    ax.axhline(0, color="#e8604c", lw=1)
+    ax.set_xlabel("classifier peak z (Section 7)")
+    ax.set_ylabel("ρ")
+    ax.set_title("agreement does not grow with the classifier's peak", fontsize=10)
+    ax.legend(fontsize=8, loc="lower right")
+    fig.tight_layout()
+    fig.savefig(out_path, dpi=130)
 
 
 def load_run(run_dir: Path):
@@ -171,10 +227,11 @@ def main():
             seconds[s["track_id"]][rival] += 1
         clf_runner_up = {tid: c.most_common(1)[0][0] for tid, c in seconds.items()}
 
-    wanted = None
+    site_set = set()
     if args.site_tracks.exists():
         site = json.loads(args.site_tracks.read_text())["tracks"]
-        wanted = {(t["artist"], t["title"]) for t in site}
+        site_set = {(t["artist"], t["title"]) for t in site}
+    wanted = None if (args.all_tracks or not site_set) else site_set
 
     tracks = []
     for tid, indices in by_track.items():
@@ -234,13 +291,14 @@ def main():
         roll = []
         for m, cz, lz in zip(notes, clf_at_note, lik_at_note):
             roll += [int(m["start_ms"]), int(m["dur_ms"]), int(m["pitch"]), int(m["velocity"]),
-                     round(float(cz), 2), round(float(lz), 2)]
+                     round(float(cz), 1), round(float(lz), 1)]
 
         ct, cc = downsample(clf_times, clf_curve, args.max_curve_points)
         lt, lc = downsample(lik_times, lik_curve, args.max_curve_points)
         tt, tc = downsample(tok_times, tok_curve, args.max_curve_points)
         tracks.append({
             "artist": meta["artist"], "title": meta.get("title", ""), "track_id": tid,
+            "demo": (meta["artist"], meta.get("title", "")) in site_set,
             "duration_s": round(float(duration), 2), "n_tokens": int(n),
             "n_windows": len(windows), "chunk_starts_s": [round(float(tok_times[s]), 2)
                                                            for s in stream["chunk_starts"]],
@@ -261,9 +319,10 @@ def main():
               f"clf peak {excerpts['clf_peak']['time_s']:.0f}s / lik peak {excerpts['lik_peak']['time_s']:.0f}s  "
               f"runner-up {names[runner_up]}")
 
-    tracks.sort(key=lambda t: t["artist"])
+    tracks.sort(key=lambda t: (t["artist"], t["title"]))
+    summary = summarise(tracks, args.excerpt_seconds)
     payload = {"tracks": tracks, "excerpt_ms": int(args.excerpt_seconds * 1000),
-               "token_sigma": args.token_sigma,
+               "token_sigma": args.token_sigma, "summary": summary,
                "boundary": boundary_diagnostic(rows, num_artists),
                "config": {"window": WINDOW, "stride": STRIDE, "smooth_sigma": SMOOTH_SIGMA,
                           "run": config}}
@@ -271,6 +330,16 @@ def main():
     args.out.write_text(json.dumps(payload, separators=(",", ":"),
                                    default=lambda o: o.item() if hasattr(o, "item") else float(o)))
     print(f"{len(tracks)} tracks, {args.out.stat().st_size / 1024:.0f} KB -> {args.out}")
+    print(f"rho: mean {summary['rho_mean']:+.2f} median {summary['rho_median']:+.2f} "
+          f"IQR [{summary['rho_q1']:+.2f}, {summary['rho_q3']:+.2f}] range [{summary['rho_min']:+.2f}, {summary['rho_max']:+.2f}]; "
+          f"negative {100 * summary['frac_negative']:.0f}%, |rho|>0.3 {100 * summary['frac_abs_above_0.3']:.0f}% "
+          f"(+ {100 * summary['frac_above_0.3']:.0f}% / - {100 * summary['frac_below_minus_0.3']:.0f}%)")
+    print(f"peaks within one excerpt: {summary['peaks_within_excerpt']}/{summary['n']}, troughs: {summary['troughs_within_excerpt']}, "
+          f"classifier peak at likelihood trough: {summary['clf_peak_is_lik_trough']}")
+    print("per-artist mean rho:", summary["per_artist_mean_rho"])
+    fig_path = args.figure or args.out.with_name("rho_distribution.png")
+    draw_figure(tracks, summary, fig_path)
+    print(f"figure -> {fig_path}")
     print("chunk-boundary diagnostic (mean margin nats/token by position in chunk):")
     for b in payload["boundary"][:6] + payload["boundary"][-2:]:
         print(f"  {b['position']:5d}: {b['mean_margin_nats']:+.4f}  (n={b['n_tokens']})")
