@@ -111,7 +111,10 @@
   tbody tr:hover td { background: var(--bg-sunken); }
   tbody tr[aria-selected="true"] td { background: var(--bg-sunken); color: var(--ink); }
   td .rho { display: inline-block; min-width: 3.2em; }
-  td .bar { display: inline-block; height: 8px; border-radius: 2px; vertical-align: middle; }
+  /* diverging bar for ρ: a centre tick at 0, the bar grows left (negative) or right (positive), neutral colour */
+  td .div { position: relative; display: inline-block; width: 84px; height: 10px; vertical-align: middle; margin-left: .4rem; }
+  td .div::before { content: ""; position: absolute; left: 50%; top: 0; bottom: 0; width: 1px; background: var(--ink-dim); }
+  td .div i { position: absolute; top: 1px; height: 8px; border-radius: 2px; background: var(--ink-dim); }
   .notes { max-width: 70ch; }
   .notes p { color: var(--ink); }
   .notes code { font-family: var(--mono); font-size: .85em; }
@@ -178,7 +181,7 @@
   <p>Spearman ρ between the two window curves, and where each method puts its peak. Click a row to open it.</p>
   <div class="table-wrap panel"><table id="table">
     <thead><tr>
-      <th>Pianist</th><th>Recording</th><th>ρ</th>
+      <th>Pianist</th><th>Recording</th><th>ρ between the two curves (− disagree · + agree)</th>
       <th>Classifier peak · trough</th><th>Likelihood peak · trough</th>
       <th>Rival label (classifier · likelihood)</th><th>Margin spread</th>
     </tr></thead>
@@ -559,7 +562,10 @@
     const body = el("table").tBodies[0];
     tracks.forEach((t, i) => {
       const tr = document.createElement("tr");
-      const bar = (rho) => `<span class="bar" style="width:${Math.abs(rho) * 40}px;background:${rho >= 0 ? "var(--pos)" : "var(--neg)"}"></span>`;
+      const bar = (rho) => {
+        const half = Math.abs(rho) * 42;   // 42px = |ρ| of 1
+        return `<span class="div" title="ρ ${signed(rho)}"><i style="${rho >= 0 ? "left:50%" : "right:50%"};width:${half}px"></i></span>`;
+      };
       tr.innerHTML = `<td>${t.artist}</td><td title="${t.title}">${t.title.length > 34 ? t.title.slice(0, 32) + "…" : t.title}</td>` +
         `<td class="num"><span class="rho">${signed(t.spearman).replace(/^\+/, "")}</span> ${bar(t.spearman)}</td>` +
         `<td class="num">${fmt(t.excerpts.clf_peak.time_s)} · ${fmt(t.excerpts.clf_trough.time_s)}</td>` +
@@ -573,9 +579,12 @@
     const neg = rhos.filter((r) => r < 0).length;
     const mean = rhos.reduce((a, b) => a + b, 0) / rhos.length;
     const within = tracks.filter((t) => Math.abs(t.excerpts.clf_peak.time_s - t.excerpts.lik_peak.time_s) <= EXCERPT_MS / 1000).length;
-    el("table-note").textContent = `Mean ρ ${signed(mean)}; ${neg} of ${tracks.length} recordings negative. ` +
+    el("table-note").textContent = `ρ is the Spearman correlation between the classifier curve and the likelihood curve of the same recording: ` +
+      `+1 would mean both methods rank the passages identically, −1 the reverse. The grey bar grows right of the tick for positive ρ and left for negative. ` +
+      `Mean ρ ${signed(mean)}; ${neg} of ${tracks.length} recordings negative. ` +
       `The two peaks fall within one excerpt of each other on ${within} of ${tracks.length}. ` +
-      `Margin spread is the within-track standard deviation each method's z-score divides by.`;
+      `Margin spread is the within-track standard deviation each method's z-score divides by. ` +
+      `Gold and blue elsewhere on the page always mean classifier and likelihood; gold and mauve on the piano rolls mean most and least characteristic.`;
   }
 
   function buildNotes() {
